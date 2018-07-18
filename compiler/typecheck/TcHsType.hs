@@ -588,16 +588,15 @@ tc_infer_hs_type mode (HsParTy _ t)          = tc_infer_lhs_type mode t
 tc_infer_hs_type mode (HsTyVar _ _ (L _ tv)) = tcTyVar mode tv
 
 tc_infer_hs_type mode (HsAppTy _ ty1 ty2)
-  = do { let (hs_fun_ty, hs_arg_tys) = splitHsAppTys ty1 [ty2]
-       ; (fun_ty, fun_kind) <- tc_infer_lhs_type mode hs_fun_ty
-           -- NB: (IT4) of Note [The tcType invariant] ensures that fun_kind is zonked
-       ; tcTyApps mode hs_fun_ty fun_ty fun_kind hs_arg_tys }
+  = tc_infer_hs_app_type mode (splitHsAppTys ty1 [HsNormArg ty2])
+tc_infer_hs_type mode (HsVAppTy _ ty1 ty2)
+  = tc_infer_hs_app_type mode (splitHsAppTys ty1 [HsVisArg ty2])
 
 tc_infer_hs_type mode (HsOpTy _ lhs lhs_op@(L _ hs_op) rhs)
   | not (hs_op `hasKey` funTyConKey)
   = do { (op, op_kind) <- tcTyVar mode hs_op
        ; tcTyApps mode (noLoc $ HsTyVar noExt NotPromoted lhs_op) op op_kind
-                       [lhs, rhs] }
+                       [HsNormArg lhs, HsNormArg rhs] }
 
 tc_infer_hs_type mode (HsKindSig _ ty sig)
   = do { sig' <- tcLHsKindSig KindSigCtxt sig
@@ -626,6 +625,12 @@ tc_infer_hs_type mode other_ty
   = do { kv <- newMetaKindVar
        ; ty' <- tc_hs_type mode other_ty kv
        ; return (ty', kv) }
+
+tc_infer_hs_app_type :: TcTyMode -> (LHsType GhcRn, [HsTyArgIn]) -> TcM (TcType, TcKind)
+tc_infer_hs_app_type mode (hs_fun_ty, hs_arg_tys)
+  = do {; (fun_ty, fun_kind) <- tc_infer_lhs_type mode hs_fun_ty
+           -- NB: (IT4) of Note [The tcType invariant] ensures that fun_kind is zonked
+       ; tcTyApps mode hs_fun_ty fun_ty fun_kind hs_arg_tys }
 
 ------------------------------------------
 tc_lhs_type :: TcTyMode -> LHsType GhcRn -> TcKind -> TcM TcType
@@ -829,6 +834,7 @@ tc_hs_type _ rn_ty@(HsTyLit _ (HsStrTy _ s)) exp_kind
 -- See Note [Future-proofing the type checker]
 tc_hs_type mode ty@(HsTyVar {})   ek = tc_infer_hs_type_ek mode ty ek
 tc_hs_type mode ty@(HsAppTy {})   ek = tc_infer_hs_type_ek mode ty ek
+tc_hs_type mode ty@(HsVAppTy {})  ek = tc_infer_hs_type_ek mode ty ek
 tc_hs_type mode ty@(HsOpTy {})    ek = tc_infer_hs_type_ek mode ty ek
 tc_hs_type mode ty@(HsKindSig {}) ek = tc_infer_hs_type_ek mode ty ek
 tc_hs_type mode ty@(XHsType (NHsCoreTy{})) ek = tc_infer_hs_type_ek mode ty ek
@@ -923,7 +929,7 @@ tcInferApps :: TcTyMode
             -> LHsType GhcRn        -- ^ Function (for printing only)
             -> TcType               -- ^ Function (could be knot-tied)
             -> TcKind               -- ^ Function kind (zonked)
-            -> [LHsType GhcRn]      -- ^ Args
+            -> [HsTyArgIn]          -- ^ Args
             -> TcM (TcType, [TcType], TcKind) -- ^ (f args, args, result kind)
 -- Precondition: typeKind fun_ty = fun_ki
 --    Reason: we will return a type application like (fun_ty arg1 ... argn),
@@ -947,7 +953,7 @@ tcInferApps mode mb_kind_info orig_hs_ty fun_ty fun_ki orig_hs_args
        -> TcType          -- function applied to some args, could be knot-tied
        -> [TyBinder]      -- binders in function kind (both vis. and invis.)
        -> TcKind          -- function kind body (not a Pi-type)
-       -> [LHsType GhcRn] -- un-type-checked args
+       -> [HsTyArgIn]     -- un-type-checked args
        -> TcM (TcType, [TcType], TcKind)  -- same as overall return type
 
       -- no user-written args left. We're done!
@@ -957,9 +963,10 @@ tcInferApps mode mb_kind_info orig_hs_ty fun_ty fun_ki orig_hs_args
                , nakedSubstTy subst $ mkPiTys ki_binders inner_ki)
                  -- nakedSubstTy: see Note [The well-kinded type invariant]
 
+      -- A normal argument was supplied.
       -- The function's kind has a binder. Is it visible or invisible?
     go n acc_args subst fun (ki_binder:ki_binders) inner_ki
-       all_args@(arg:args)
+       all_args@(HsNormArg arg:args)
       | isInvisibleBinder ki_binder
         -- It's invisible. Instantiate.
       = do { traceTc "tcInferApps (invis)" (ppr ki_binder $$ ppr subst)
@@ -983,6 +990,37 @@ tcInferApps mode mb_kind_info orig_hs_ty fun_ty fun_ki orig_hs_args
                 (mkNakedAppTy fun arg') -- See Note [The well-kinded type invariant]
                 ki_binders inner_ki args }
 
+      -- A argument with a visibility override was supplied.
+      -- The function's kind has a binder. Is it visible or invisible?
+    go n acc_args subst fun (ki_binder:ki_binders) inner_ki (HsVisArg arg:args)
+      | isInvisibleBinder ki_binder
+        -- It's invisible. Check the next user-written argument
+      = do { traceTc "tcInferApps (vis)" (vcat [ ppr ki_binder, ppr arg
+                                               , ppr (tyBinderType ki_binder)
+                                               , ppr subst ])
+           ; let exp_kind = nakedSubstTy subst $ tyBinderType ki_binder
+                            -- nakedSubstTy: see Note [The well-kinded type invariant]
+           ; arg' <- addErrCtxt (funAppCtxt orig_hs_ty arg n) $
+                     tc_lhs_type mode arg exp_kind
+           ; traceTc "tcInferApps (vis 1)" (vcat [ ppr exp_kind
+                                                 , ppr (typeKind arg') ])
+           ; let subst' = extendTvSubstBinderAndInScope subst ki_binder arg'
+           ; go (n+1) (arg' : acc_args) subst'
+                (mkNakedAppTy fun arg') -- See Note [The well-kinded type invariant]
+                ki_binders inner_ki args }
+
+      | otherwise
+        -- It's visible. Fail.
+      = do { ki <- zonkTcType fun_ki
+               -- TODO (int-index): 1. it shouldn't be fun_ki
+               --                   2. should it be zonkTcType or zonkTidyTcType?
+               --                   3. why isn't this zonk a no-op if the
+               --                      comment says that fun_ki is zonked? seems
+               --                      like (IT4) got violated somewhere
+           ; failWithTc $
+               text "Cannot apply type of kind" <+> quotes (ppr ki) $$
+               text "to a visible type argument" <+> quotes (ppr arg) }
+
        -- We've run out of known binders in the functions's kind.
     go n acc_args subst fun [] inner_ki all_args
       | not (null new_ki_binders)
@@ -1003,7 +1041,7 @@ tcInferApps mode mb_kind_info orig_hs_ty fun_ty fun_ki orig_hs_args
         substed_inner_ki               = substTy subst inner_ki
         (new_ki_binders, new_inner_ki) = tcSplitPiTys substed_inner_ki
         zapped_subst                   = zapTCvSubst subst
-        hs_ty = mkHsAppTys orig_hs_ty (take (n-1) orig_hs_args)
+        hs_ty = wrapHsTyArgs orig_hs_ty (take (n-1) orig_hs_args)
 
 
 -- | Applies a type to a list of arguments.
@@ -1015,7 +1053,7 @@ tcTyApps :: TcTyMode
          -> LHsType GhcRn        -- ^ Function (for printing only)
          -> TcType               -- ^ Function (could be knot-tied)
          -> TcKind               -- ^ Function kind (zonked)
-         -> [LHsType GhcRn]      -- ^ Args
+         -> [HsTyArgIn]          -- ^ Args
          -> TcM (TcType, TcKind) -- ^ (f args, result kind)   result kind is zonked
 -- Precondition: see precondition for tcInferApps
 tcTyApps mode orig_hs_ty fun_ty fun_ki args

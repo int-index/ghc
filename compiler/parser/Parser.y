@@ -88,7 +88,7 @@ import GhcPrelude
 import qualified GHC.LanguageExtensions as LangExt
 }
 
-%expect 235 -- shift/reduce conflicts
+%expect 236 -- shift/reduce conflicts
 
 {- Last updated: 04 June 2018
 
@@ -1926,7 +1926,9 @@ tyapps :: { Located [Located TyEl] } -- NB: This list is reversed
         | tyapps tyapp                  { sLL $1 $> $ $2 : (unLoc $1) }
 
 tyapp :: { Located TyEl }
-        : atype                         { sL1 $1 $ TyElOpd (unLoc $1) }
+        : atype                         { sL1 $1 $ mkTyElNormOpd (unLoc $1) }
+        | TYPEAPP atype                 {% ams (sLL $1 $> $ mkTyElVOpd (unLoc $2))
+                                               [mj AnnAt $1] }
         | qtyconop                      { sL1 $1 $ TyElOpr (unLoc $1) }
         | tyvarop                       { sL1 $1 $ TyElOpr (unLoc $1) }
         | SIMPLEQUOTE qconop            {% ams (sLL $1 $> $ TyElOpr (unLoc $2))

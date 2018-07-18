@@ -15,6 +15,7 @@ HsTypes: Abstract syntax: user-defined types
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 
 module HsTypes (
         HsType(..), NewHsTypeX(..), LHsType, HsKind, LHsKind,
@@ -57,8 +58,10 @@ module HsTypes (
         splitLHsPatSynTy,
         splitLHsForAllTy, splitLHsQualTy, splitLHsSigmaTy,
         splitHsFunType,
+        HsTyArg(..), HsTyArgIn,
         splitHsAppTys, hsTyGetAppHead_maybe,
-        mkHsOpTy, mkHsAppTy, mkHsAppTys,
+        wrapHsTyArgs,
+        mkHsOpTy, mkHsAppTy, mkHsAppTys, mkHsVAppTy,
         ignoreParens, hsSigType, hsSigWcType,
         hsLTyVarBndrToType, hsLTyVarBndrsToTypes,
 
@@ -526,6 +529,13 @@ data HsType pass
 
       -- For details on above see note [Api annotations] in ApiAnnotation
 
+  | HsVAppTy            (XVAppTy pass)
+                        (LHsType pass)
+                        (LHsType pass)
+      -- ^ - 'ApiAnnotation.AnnKeywordId' : 'ApiAnnotation.AnnAt',
+
+      -- For details on above see note [Api annotations] in ApiAnnotation
+
   | HsFunTy             (XFunTy pass)
                         (LHsType pass)   -- function type
                         (LHsType pass)
@@ -679,6 +689,7 @@ type instance XForAllTy        (GhcPass _) = NoExt
 type instance XQualTy          (GhcPass _) = NoExt
 type instance XTyVar           (GhcPass _) = NoExt
 type instance XAppTy           (GhcPass _) = NoExt
+type instance XVAppTy          (GhcPass _) = NoExt
 type instance XFunTy           (GhcPass _) = NoExt
 type instance XListTy          (GhcPass _) = NoExt
 type instance XTupleTy         (GhcPass _) = NoExt
@@ -1042,6 +1053,10 @@ mkHsAppTys :: LHsType (GhcPass p) -> [LHsType (GhcPass p)]
            -> LHsType (GhcPass p)
 mkHsAppTys = foldl mkHsAppTy
 
+mkHsVAppTy :: LHsType (GhcPass p) -> LHsType (GhcPass p) -> LHsType (GhcPass p)
+mkHsVAppTy t1 t2
+  = addCLoc t1 t2 (HsVAppTy noExt t1 (parenthesizeHsType appPrec t2))
+
 {-
 ************************************************************************
 *                                                                      *
@@ -1092,11 +1107,31 @@ hsTyGetAppHead_maybe = go []
     go tys (L _ (HsKindSig _ t _))         = go tys t
     go _   _                             = Nothing
 
-splitHsAppTys :: LHsType GhcRn -> [LHsType GhcRn]
-              -> (LHsType GhcRn, [LHsType GhcRn])
-splitHsAppTys (L _ (HsAppTy _ f a)) as = splitHsAppTys f (a:as)
+-- See HsArg in TcExpr.hs - HsTyArg is its type-level equivalent.
+--
+-- One difference is that we don't track parentheses. This should be changed
+-- during https://ghc.haskell.org/trac/ghc/wiki/Design/TypeRefactor
+data HsTyArg ty vty
+  = HsNormArg ty
+  | HsVisArg vty
+
+instance (Outputable ty, Outputable vty) => Outputable (HsTyArg ty vty) where
+  ppr (HsNormArg ty) = text "HsNormArg" <> ppr ty
+  ppr (HsVisArg vty) = text "HsVisArg" <> ppr vty
+
+type HsTyArgIn = HsTyArg (LHsType GhcRn) (LHsType GhcRn)
+
+splitHsAppTys :: LHsType GhcRn -> [HsTyArgIn]
+              -> (LHsType GhcRn, [HsTyArgIn])
+splitHsAppTys (L _ (HsAppTy _ f a)) as = splitHsAppTys f (HsNormArg a:as)
+splitHsAppTys (L _ (HsVAppTy _ f a)) as = splitHsAppTys f (HsVisArg a:as)
 splitHsAppTys (L _ (HsParTy _ f))   as = splitHsAppTys f as
 splitHsAppTys f                     as = (f,as)
+
+wrapHsTyArgs :: LHsType GhcRn -> [HsTyArgIn] -> LHsType GhcRn
+wrapHsTyArgs f [] = f
+wrapHsTyArgs f (HsNormArg a : args) = wrapHsTyArgs (mkHsAppTy f a) args
+wrapHsTyArgs f (HsVisArg a : args) = wrapHsTyArgs (mkHsVAppTy f a) args
 
 --------------------------------
 splitLHsPatSynTy :: LHsType pass
@@ -1420,6 +1455,9 @@ ppr_mono_ty (HsStarTy _ isUni)  = char (if isUni then '★' else '*')
 ppr_mono_ty (HsAppTy _ fun_ty arg_ty)
   = hsep [ppr_mono_lty fun_ty, ppr_mono_lty arg_ty]
 
+ppr_mono_ty (HsVAppTy _ fun_ty arg_ty)
+  = hsep [ppr_mono_lty fun_ty, char '@' <+> ppr_mono_lty arg_ty]
+
 ppr_mono_ty (HsOpTy _ ty1 (L _ op) ty2)
   = sep [ ppr_mono_lty ty1
         , sep [pprInfixOcc op, ppr_mono_lty ty2 ] ]
@@ -1476,6 +1514,7 @@ hsTypeNeedsParens p = go
     go (HsWildCardTy{})      = False
     go (HsStarTy{})          = False
     go (HsAppTy{})           = p >= appPrec
+    go (HsVAppTy{})          = p >= appPrec
     go (HsOpTy{})            = p >= opPrec
     go (HsParTy{})           = False
     go (HsDocTy _ (L _ t) _) = go t

@@ -5,6 +5,7 @@
 -}
 
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE CPP #-}
 
 module RnTypes (
@@ -626,6 +627,11 @@ rnHsTyKi env (HsAppTy _ ty1 ty2)
        ; (ty2', fvs2) <- rnLHsTyKi env ty2
        ; return (HsAppTy noExt ty1' ty2', fvs1 `plusFV` fvs2) }
 
+rnHsTyKi env (HsVAppTy _ ty1 ty2)
+  = do { (ty1', fvs1) <- rnLHsTyKi env ty1
+       ; (ty2', fvs2) <- rnLHsTyKi env ty2
+       ; return (HsVAppTy noExt ty1' ty2', fvs1 `plusFV` fvs2) }
+
 rnHsTyKi env t@(HsIParamTy _ n ty)
   = do { notInKinds env t
        ; (ty', fvs) <- rnLHsTyKi env ty
@@ -1053,6 +1059,7 @@ collectAnonWildCards lty = go lty
     go (L _ ty) = case ty of
       HsWildCardTy (AnonWildCard (L _ wc)) -> [wc]
       HsAppTy _ ty1 ty2              -> go ty1 `mappend` go ty2
+      HsVAppTy _ ty1 ty2             -> go ty1 `mappend` go ty2
       HsFunTy _ ty1 ty2              -> go ty1 `mappend` go ty2
       HsListTy _ ty                  -> go ty
       HsTupleTy _ _ tys              -> gos tys
@@ -1736,6 +1743,8 @@ extract_lty t_or_k (L _ ty) acc
                                              . cd_fld_type . unLoc) acc
                                            flds
       HsAppTy _ ty1 ty2           -> extract_lty t_or_k ty1 =<<
+                                     extract_lty t_or_k ty2 acc
+      HsVAppTy _ ty1 ty2          -> extract_lty t_or_k ty1 =<<
                                      extract_lty t_or_k ty2 acc
       HsListTy _ ty               -> extract_lty t_or_k ty acc
       HsTupleTy _ _ tys           -> extract_ltys t_or_k tys acc

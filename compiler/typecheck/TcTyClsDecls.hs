@@ -1592,7 +1592,8 @@ kcFamTyPats tc_fam_tc tv_names arg_pats kind_checker
              fun_kind = tyConKind tc_fam_tc
 
        ; (_, _, res_kind_out) <- tcInferApps typeLevelMode Nothing lhs_fun no_fun
-                                             fun_kind arg_pats
+                                             fun_kind
+                                             (map HsNormArg arg_pats)
        ; traceTc "kcFamTyPats" (vcat [ ppr tc_fam_tc, ppr arg_pats, ppr res_kind_out ])
        ; kind_checker res_kind_out }
 
@@ -1647,7 +1648,8 @@ tcFamTyPats fam_tc mb_clsinfo
 
                   ; (_, args, res_kind_out)
                       <- tcInferApps typeLevelMode mb_kind_env
-                                     lhs_fun fun_ty fun_kind arg_pats
+                                     lhs_fun fun_ty fun_kind
+                                     (map HsNormArg arg_pats)
 
                   ; traceTc "tcFamTyPats 1" (vcat [ ppr fam_tc, ppr arg_pats, ppr res_kind_out ])
 

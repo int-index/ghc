@@ -7,6 +7,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE MagicHash #-}
 
 module   RdrHsSyn (
@@ -58,7 +59,7 @@ module   RdrHsSyn (
         checkEmptyGADTs,
         parseErrorSDoc, hintBangPat,
         splitTilde,
-        TyEl(..), mergeOps,
+        TyEl(..), mkTyElNormOpd, mkTyElVOpd, mergeOps,
 
         -- Help with processing exports
         ImpExpSubSpec(..),
@@ -1286,9 +1287,12 @@ isFunLhs e = go e [] []
 --   [~a, ~b, c, ~d] ==> (~a) ~ ((b c) ~ d)
 --
 -- See Note [Parsing ~]
-splitTilde :: [LHsType GhcPs] -> P (LHsType GhcPs)
-splitTilde [] = panic "splitTilde"
-splitTilde (x:xs) = go x xs
+splitTilde' :: [Located TyOpd] -> P (LHsType GhcPs)
+splitTilde' [] = panic "splitTilde"
+splitTilde' (x:xs) =
+  case x of
+    L loc (TyNormOpd t) -> go (L loc t) xs
+    L loc (TyVisOpd _) -> parseErrorSDoc loc (text "Type application has no LHS")
   where
     -- We accumulate applications in the LHS until we encounter a laziness
     -- annotation. For example, if we have [Foo, x, y, ~Bar, z], the 'lhs'
@@ -1299,19 +1303,35 @@ splitTilde (x:xs) = go x xs
     -- In case the tail contained more laziness annotations, they would be
     -- processed similarly. This makes '~' right-associative.
     go lhs [] = return lhs
-    go lhs (x:xs)
-      | L loc (HsBangTy _ (HsSrcBang NoSourceText NoSrcUnpack SrcLazy) t) <- x
-      = do { rhs <- splitTilde (t:xs)
+    go lhs (L loc x:xs)
+      | TyNormOpd (HsBangTy _ (HsSrcBang NoSourceText NoSrcUnpack SrcLazy) t) <- x
+      = do { rhs <- splitTilde' (fmap @Located TyNormOpd t:xs)
            ; let r = mkLHsOpTy lhs (tildeOp loc) rhs
            ; moveAnnotations loc (getLoc r)
            ; return r }
-      | otherwise
-      = go (mkHsAppTy lhs x) xs
+      | TyNormOpd t <- x
+      = go (mkHsAppTy lhs (L loc t)) xs
+      | TyVisOpd t <- x
+      = go (mkHsVAppTy lhs (L loc t)) xs
 
     tildeOp loc = L (srcSpanFirstCharacter loc) eqTyCon_RDR
 
+splitTilde :: [LHsType GhcPs] -> P (LHsType GhcPs)
+splitTilde = splitTilde' . map (fmap @Located TyNormOpd)
+
+-- | Type operand (normal argument or with a visibility override).
+data TyOpd = TyNormOpd (HsType GhcPs) | TyVisOpd (HsType GhcPs)
+
 -- | Either an operator or an operand.
-data TyEl = TyElOpr RdrName | TyElOpd (HsType GhcPs)
+data TyEl
+  = TyElOpr RdrName
+  | TyElOpd TyOpd
+
+mkTyElNormOpd :: HsType GhcPs -> TyEl
+mkTyElNormOpd = TyElOpd . TyNormOpd
+
+mkTyElVOpd :: HsType GhcPs -> TyEl
+mkTyElVOpd = TyElOpd . TyVisOpd
 
 -- | Merge a /reversed/ and /non-empty/ soup of operators and operands
 --   into a type.
@@ -1333,7 +1353,7 @@ mergeOps = go [] id
     go acc ops_acc (L l (TyElOpr op):xs) =
       if null acc || null xs
         then failOpFewArgs (L l op)
-        else do { a <- splitTilde acc
+        else do { a <- splitTilde' acc
                 ; go [] (\c -> mkLHsOpTy c (L l op) (ops_acc a)) xs }
 
     -- clause (b):
@@ -1350,7 +1370,7 @@ mergeOps = go [] id
     -- 3. 'mergeOps' was called with a list where the head is an
     --    operand, this is handled by clause (b)
     go acc ops_acc [] =
-      do { a <- splitTilde acc
+      do { a <- splitTilde' acc
          ; return (ops_acc a) }
 
 ---------------------------------------------------------------------------
