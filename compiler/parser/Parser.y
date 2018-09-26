@@ -1913,7 +1913,10 @@ tyapps :: { [Located TyEl] } -- NB: This list is reversed
 tyapp :: { Located TyEl }
         : atype                         { sL1 $1 $ TyElOpd (unLoc $1) }
         | qtyconop                      { sL1 $1 $ TyElOpr (unLoc $1) }
-        | tyvarop                       { sL1 $1 $ TyElOpr (unLoc $1) }
+        | '`' tyvarid '`'               {% ams (sLL $1 $> (TyElOpr (unLoc $2)))
+                                           [mj AnnBackquote $1, mj AnnVal $2
+                                           ,mj AnnBackquote $3] }
+        | '.'                           { sL1 $1 $ TyElOpr (mkUnqual tcClsName (fsLit ".")) }
         | SIMPLEQUOTE qconop            {% ams (sLL $1 $> $ TyElOpr (unLoc $2))
                                                [mj AnnSimpleQuote $1,mj AnnVal $2] }
         | SIMPLEQUOTE varop             {% ams (sLL $1 $> $ TyElOpr (unLoc $2))
@@ -3243,12 +3246,6 @@ qvaropm :: { Located RdrName }
 
 tyvar   :: { Located RdrName }
 tyvar   : tyvarid               { $1 }
-
-tyvarop :: { Located RdrName }
-tyvarop : '`' tyvarid '`'       {% ams (sLL $1 $> (unLoc $2))
-                                       [mj AnnBackquote $1,mj AnnVal $2
-                                       ,mj AnnBackquote $3] }
-        | '.'                   {% hintExplicitForall' (getLoc $1) }
 
 tyvarid :: { Located RdrName }
         : VARID            { sL1 $1 $! mkUnqual tvName (getVARID $1) }
