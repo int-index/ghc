@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds, UnicodeSyntax #-}
+{-# OPTIONS -fno-warn-star-is-type #-}
 
 import Data.Typeable
 import GHC.Types

@@ -6,6 +6,7 @@
 --       to disable to keep supporting this test-case
 --
 {-# LANGUAGE NoMonadFailDesugaring #-}
+{-# OPTIONS -fno-warn-missing-monadfail-instances #-}
 
 module MonadFailWarnings where
 

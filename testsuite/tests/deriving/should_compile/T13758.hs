@@ -48,7 +48,6 @@ instance (Generic a, Monoid' (Rep a)) => Semigroup (GenericMonoid a) where
 
 instance (Generic a, Monoid' (Rep a)) => Monoid (GenericMonoid a) where
   mempty  = coerce (memptydefault  :: a)
-  mappend = coerce (mappenddefault :: a -> a -> a)
 
 data Urls = Urls String String String
   deriving (Show, Generic)

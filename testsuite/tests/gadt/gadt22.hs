@@ -8,19 +8,20 @@
 
 module Expr where
 
+import Data.Kind (Type)
 import Data.Set (Set)
 
-data Type a where
-    TypeInt     :: Type Int
-    TypeSet     :: Ord a => Type a -> Type (Set a)
-    TypeFun     :: Type a -> Type b -> Type (a -> b)
+data Ty a where
+    TyInt     :: Ty Int
+    TySet     :: Ord a => Ty a -> Ty (Set a)
+    TyFun     :: Ty a -> Ty b -> Ty (a -> b)
 
-data Expr :: * -> * where
-    Const :: Type a -> a -> Expr a
+data Expr :: Type -> Type where
+    Const :: Ty a -> a -> Expr a
 
 data DynExpr = forall a. DynExpr (Expr a)
 
 withOrdDynExpr :: DynExpr -> (forall a. Ord a => Expr a -> b) -> Maybe b
-withOrdDynExpr (DynExpr e@(Const (TypeSet _) _)) f = Just (f e)
-withOrdDynExpr (DynExpr e@(Const TypeInt _)) f = Just (f e)
+withOrdDynExpr (DynExpr e@(Const (TySet _) _)) f = Just (f e)
+withOrdDynExpr (DynExpr e@(Const TyInt _)) f = Just (f e)
 withOrdDynExpr _ _ = Nothing

@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeOperators, TypeFamilies #-}
+{-# OPTIONS -fno-warn-star-is-type #-}
 
 module X (type (X.*)) where
 

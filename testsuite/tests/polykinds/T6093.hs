@@ -1,12 +1,14 @@
 {-# LANGUAGE GADTs, RankNTypes, PolyKinds #-}
 module T6093 where
 
+import Data.Kind (Type)
+
 -- Polymorphic kind recursion
-data R :: forall k. k -> * where
+data R :: forall k. k -> Type where
     MkR :: R f -> R (f ())
 
 data IOWitness (a :: k) = IOW
 
-data Type :: forall k. k -> * where
-  SimpleType :: IOWitness a -> Type a
-  ConstructedType :: Type f -> Type a -> Type (f a)
+data Ty :: forall k. k -> Type where
+  SimpleTy :: IOWitness a -> Ty a
+  ConstructedTy :: Ty f -> Ty a -> Ty (f a)

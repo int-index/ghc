@@ -6,33 +6,35 @@
 
 module ShouldCompile where
 
+import Data.Kind (Type)
+
 data Typed
 data Untyped
 
-type family TU a b :: *
+type family TU a b :: Type
 type instance TU Typed b = b
 type instance TU Untyped b = ()
 
 -- A type witness type, use eg. for pattern-matching on types
-data Type a where
-    TypeInt     :: Type Int
-    TypeBool    :: Type Bool
-    TypeString  :: Type String
-    TypeList    :: Type t -> Type [t]
+data Ty a where
+    TyInt     :: Ty Int
+    TyBool    :: Ty Bool
+    TyString  :: Ty String
+    TyList    :: Ty t -> Ty [t]
 
-data Expr :: * -> * -> * {- tu a -} where
-    Const :: Type a -> a -> Expr tu (TU tu a)
-    Var2  :: a -> TU tu (Type a) -> Expr tu (TU tu a)
+data Expr :: Type -> Type -> Type {- tu a -} where
+    Const :: Ty a -> a -> Expr tu (TU tu a)
+    Var2  :: a -> TU tu (Ty a) -> Expr tu (TU tu a)
 
 bug1 :: Expr Typed Bool -> ()
-bug1 (Const TypeBool False) = ()
+bug1 (Const TyBool False) = ()
 
 bug2a :: Expr Typed Bool -> ()
-bug2a (Var2 x (TypeBool :: Type Bool)) = ()
+bug2a (Var2 x (TyBool :: Ty Bool)) = ()
 
 bug2c :: Expr Typed Bool -> ()
-bug2c (Var2 x TypeBool) = ()
+bug2c (Var2 x TyBool) = ()
 
 bug2b :: Expr Typed (TU Typed Bool) -> ()
-bug2b (Var2 x TypeBool) = ()
+bug2b (Var2 x TyBool) = ()
 
