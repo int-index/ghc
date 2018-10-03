@@ -15,4 +15,4 @@ type family S a
 type instance S a = a
 
 type family SMRef (m:: Type -> Type) :: Type -> Type
-type instance SMRef IO = IORef 
+type instance SMRef IO = IORef

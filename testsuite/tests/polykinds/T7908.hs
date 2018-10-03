@@ -22,9 +22,11 @@ data Hidden :: (k -> Type) -> Type where
 instance Monad' Hidden where
   return' :: forall k (c :: k -> Type) (a :: k) . c a -> Hidden c
   return' = Hide
-  (>>>=) :: forall k (c :: k -> Type) (d :: k -> Type) . Hidden c -> (forall (a :: k) . c a -> Hidden d) -> Hidden d
+  (>>>=) :: forall k (c :: k -> Type) (d :: k -> Type) .
+            Hidden c -> (forall (a :: k) . c a -> Hidden d) -> Hidden d
   Hide a >>>= f = f a
-  (>>-) :: forall k (c :: k -> Type) d . Hidden c -> (forall (a :: k) . c a -> d) -> d
+  (>>-) :: forall k (c :: k -> Type) d .
+           Hidden c -> (forall (a :: k) . c a -> d) -> d
   Hide a >>- f = f a
 
 

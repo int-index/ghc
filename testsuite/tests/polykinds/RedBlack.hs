@@ -29,7 +29,7 @@ data Node :: RedBlack -> Nat -> Type -> Type where
 deriving instance Show a => Show (Node c n a)
 
 -- one-hole context for red-black trees
-data Context :: Nat -> RedBlack -> Nat -> Type -> Type  where 
+data Context :: Nat -> RedBlack -> Nat -> Type -> Type  where
   -- if we're at the root, the hole is a black node
   Root :: Context n Black n a
   -- we can go left or right from a red node hole, creating a hole for a black node
