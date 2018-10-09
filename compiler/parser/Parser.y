@@ -2475,37 +2475,32 @@ exp   :: { LHsExpr GhcPs }
         | infixexp              { $1 }
 
 infixexp :: { LHsExpr GhcPs }
-        : exp10 { $1 }
-        | infixexp qop exp10  {% ams (sLL $1 $> (OpApp noExt $1 $2 $3))
-                                     [mj AnnVal $2] }
-                 -- AnnVal annotation for NPlusKPat, which discards the operator
+        : eann(infixexp_no_ann) { $1 }
 
 infixexp_top :: { LHsExpr GhcPs }
-        : exp10_top               { $1 }
-        | infixexp_top qop exp10_top
-                                  {% ams (sLL $1 $> (OpApp noExt $1 $2 $3))
-                                         [mj AnnVal $2] }
+        : eann_no_scc(infixexp_no_ann) { $1 }
 
+infixexp_no_ann :: { LHsExpr GhcPs }
+        : fexpm { $1 }
+        | infixexp_no_ann qop eann(fexpm)  {% ams (sLL $1 $> (OpApp noExt $1 $2 $3))
+                                              [mj AnnVal $2] }
+                 -- AnnVal annotation for NPlusKPat, which discards the operator
 
-exp10_top :: { LHsExpr GhcPs }
-        : '-' fexp                      {% ams (sLL $1 $> $ NegApp noExt $2 noSyntaxExpr)
-                                               [mj AnnMinus $1] }
+eann(p) :: { LHsExpr GhcPs }
+        : eann_no_scc(p) { $1 }
+        | scc_annot eann(p) {% mkHsSCC $1 $2 }
 
+eann_no_scc(p) :: { LHsExpr GhcPs }
+        : p { $1 }
+        | hpc_annot  eann(p) {% mkHsTickPragma $1 $2 }
+        | core_annot eann(p) {% mkHsCoreAnn $1 $2 }
 
-        | hpc_annot exp        {% ams (sLL $1 $> $ HsTickPragma noExt (snd $ fst $ fst $ unLoc $1)
-                                                                (snd $ fst $ unLoc $1) (snd $ unLoc $1) $2)
-                                      (fst $ fst $ fst $ unLoc $1) }
-
-        | '{-# CORE' STRING '#-}' exp  {% ams (sLL $1 $> $ HsCoreAnn noExt (getCORE_PRAGs $1) (getStringLiteral $2) $4)
-                                              [mo $1,mj AnnVal $2
-                                              ,mc $3] }
-                                          -- hdaume: core annotation
-        | fexp                         { $1 }
-
-exp10 :: { LHsExpr GhcPs }
-        : exp10_top            { $1 }
-        | scc_annot exp        {% ams (sLL $1 $> $ HsSCC noExt (snd $ fst $ unLoc $1) (snd $ unLoc $1) $2)
-                                      (fst $ fst $ unLoc $1) }
+core_annot :: { Located (([AddAnn],SourceText),StringLiteral) }
+        : '{-# CORE' STRING '#-}'
+                   { sLL $1 $> $
+                       (([mo $1,mj AnnVal $2,mc $3]
+                        ,getCORE_PRAGs $1)
+                       ,getStringLiteral $2) }
 
 optSemi :: { ([Located a],Bool) }
         : ';'         { ([$1],True) }
@@ -2545,6 +2540,11 @@ hpc_annot :: { Located ( (([AddAnn],SourceText),(StringLiteral,(Int,Int),(Int,In
                                                 , getINTEGERs $9
                                                 )))
                                          }
+
+fexpm   :: { LHsExpr GhcPs }
+        : '-' fexp                   {% ams (sLL $1 $> $ NegApp noExt $2 noSyntaxExpr)
+                                            [mj AnnMinus $1] }
+        | fexp                       { $1 }
 
 fexp    :: { LHsExpr GhcPs }
         : fexp aexp                  {% checkBlockArguments $1 >> checkBlockArguments $2 >>
@@ -2722,11 +2722,18 @@ texp :: { LHsExpr GhcPs }
         -- Then when converting expr to pattern we unravel it again
         -- Meanwhile, the renamer checks that real sections appear
         -- inside parens.
-        | infixexp qop        { sLL $1 $> $ SectionL noExt $1 $2 }
+        | texp_sectionl       { let (ex, op) = $1 in
+                                sLL ex op $ SectionL noExt ex op }
         | qopm infixexp       { sLL $1 $> $ SectionR noExt $1 $2 }
 
        -- View patterns get parenthesized above
         | exp '->' texp   {% ams (sLL $1 $> $ EViewPat noExt $1 $3) [mu AnnRarrow $2] }
+
+texp_sectionl :: { (LHsExpr GhcPs, LHsExpr GhcPs) }
+        : infixexp_no_ann qop { ($1, $2) }
+        | scc_annot  texp_sectionl {% travFst (mkHsSCC $1) $2 }
+        | hpc_annot  texp_sectionl {% travFst (mkHsTickPragma $1) $2 }
+        | core_annot texp_sectionl {% travFst (mkHsCoreAnn $1) $2 }
 
 -- Always at least one comma or bar.
 tup_exprs :: { ([AddAnn],SumOrTuple) }

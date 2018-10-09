@@ -67,6 +67,12 @@ module   RdrHsSyn (
         mkImpExpSubSpec,
         checkImportSpec,
 
+        -- SSC/GENERATED/CORE anns
+        mkHsSCC,
+        mkHsTickPragma,
+        mkHsCoreAnn,
+        travFst,
+
         -- Warnings and errors
         warnStarIsType,
         failOpFewArgs,
@@ -2039,6 +2045,52 @@ mkImpExpSubSpec xs =
 isImpExpQcWildcard :: ImpExpQcSpec -> Bool
 isImpExpQcWildcard ImpExpQcWildcard = True
 isImpExpQcWildcard _                = False
+
+-----------------------------------------------------------------------------
+-- SCC/GENERATED/CORE annotations
+
+mkHsSCC :: Located (([AddAnn],SourceText),StringLiteral)
+        -> LHsExpr GhcPs
+        -> P (LHsExpr GhcPs)
+mkHsSCC (L scc_loc scc_ann) expr@(L expr_loc _) = do
+  let loc = combineSrcSpans scc_loc expr_loc
+  addAnnsAt loc (fst $ fst scc_ann)
+  return $ L loc $
+    HsSCC noExt
+      (snd $ fst scc_ann)
+      (snd scc_ann)
+      expr
+
+mkHsTickPragma :: Located ((([AddAnn],SourceText),
+                            (StringLiteral,(Int,Int),(Int,Int))),
+                           ((SourceText,SourceText),
+                            (SourceText,SourceText)))
+               -> LHsExpr GhcPs
+               -> P (LHsExpr GhcPs)
+mkHsTickPragma (L tick_loc tick_ann) expr@(L expr_loc _) = do
+  let loc = combineSrcSpans tick_loc expr_loc
+  addAnnsAt loc (fst $ fst $ fst tick_ann)
+  return $ L loc $
+    HsTickPragma noExt
+      (snd $ fst $ fst tick_ann)
+      (snd $ fst tick_ann)
+      (snd $ tick_ann)
+      expr
+
+mkHsCoreAnn :: Located (([AddAnn],SourceText),StringLiteral)
+            -> LHsExpr GhcPs
+            -> P (LHsExpr GhcPs)
+mkHsCoreAnn (L core_loc core_ann) expr@(L expr_loc _) = do
+  let loc = combineSrcSpans core_loc expr_loc
+  addAnnsAt loc (fst $ fst core_ann)
+  return $ L loc $
+    HsCoreAnn noExt
+      (snd $ fst core_ann)
+      (snd core_ann)
+      expr
+
+travFst :: (a -> P a') -> (a, b) -> P (a', b)
+travFst f (a, b) = (\a' -> (a', b)) <$> f a
 
 -----------------------------------------------------------------------------
 -- Warnings and failures
