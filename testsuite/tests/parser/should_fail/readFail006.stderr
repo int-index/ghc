@@ -1,2 +1,5 @@
 
-readFail006.hs:8:12: parse error on input ‘@’
+readFail006.hs:8:11: error:
+    Illegal @-pattern in expression:
+      2@_
+    Did you mean to enable TypeApplications?

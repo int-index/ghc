@@ -1,5 +1,4 @@
 
-readFail034.hs:4:6: error:
-    parse error on input ‘=’
-    Perhaps you need a 'let' in a 'do' block?
-    e.g. 'let x = 5' instead of 'x = 5'
+readFail034.hs:4:4: error:
+    Operator is missing a right-hand side argument: #
+    Perhaps you meant to enable MagicHash?

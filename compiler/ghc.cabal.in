@@ -393,6 +393,7 @@ Library
         OptCoercion
         Parser
         RdrHsSyn
+        ExpPatFrame
         ApiAnnotation
         ForeignCall
         KnownUniques

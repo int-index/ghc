@@ -1,4 +1,4 @@
 
-readFail007.hs:6:4:
-    Parse error in pattern: 2 + 2
+readFail007.hs:6:5: error:
+    Illegal function binding in pattern: +
     Possibly caused by a missing 'do'?

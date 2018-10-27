@@ -9,5 +9,5 @@ SafeLang12_B.hs:2:14: warning:
 [3 of 3] Compiling Main             ( SafeLang12.hs, SafeLang12.o )
 
 SafeLang12.hs:8:1: error:
-    parse error on input ‘$’
-    Perhaps you intended to use TemplateHaskell
+    Operator is missing a left-hand side argument: $
+    Perhaps you intended to use TemplateHaskell?

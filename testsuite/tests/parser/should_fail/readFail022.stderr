@@ -1,2 +1,5 @@
 
-readFail022.hs:4:2: Parse error in pattern: a # b
+readFail022.hs:4:4: error:
+    Function binding for (#) is parenthesized,
+    but there are no more parameters after the closing parenthesis.
+    This is disallowed.

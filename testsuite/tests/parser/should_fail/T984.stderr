@@ -1,4 +1,5 @@
 
-T984.hs:6:9:
-    Parse error in pattern: case () of { _ -> result }
+T984.hs:6:9: error:
+    Illegal case-expression in pattern:
+      case () of { _ -> result }
     Possibly caused by a missing 'do'?

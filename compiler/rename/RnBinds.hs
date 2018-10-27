@@ -1175,6 +1175,7 @@ rnMatch' :: Outputable (body GhcPs) => HsMatchContext Name
          -> RnM (Match GhcRn (Located (body GhcRn)), FreeVars)
 rnMatch' ctxt rnBody (Match { m_ctxt = mf, m_pats = pats, m_grhss = grhss })
   = do  { -- Note that there are no local fixity decls for matches
+        ; checkBangPatterns mf
         ; rnPats ctxt pats      $ \ pats' -> do
         { (grhss', grhss_fvs) <- rnGRHSs ctxt rnBody grhss
         ; let mf' = case (ctxt, mf) of
@@ -1184,6 +1185,13 @@ rnMatch' ctxt rnBody (Match { m_ctxt = mf, m_pats = pats, m_grhss = grhss })
         ; return (Match { m_ext = noExt, m_ctxt = mf', m_pats = pats'
                         , m_grhss = grhss'}, grhss_fvs ) }}
 rnMatch' _ _ (XMatch _) = panic "rnMatch'"
+
+checkBangPatterns :: HsMatchContext RdrName -> RnM ()
+checkBangPatterns FunRhs{ mc_fun = L _ name, mc_strictness = SrcStrict } =
+  unlessM (xoptM LangExt.BangPatterns) $
+    addErr (text "Illegal bang pattern: !" <> pprPrefixOcc name $$
+            text "Did you mean to enable BangPatterns?")
+checkBangPatterns _ = return ()
 
 emptyCaseErr :: HsMatchContext Name -> SDoc
 emptyCaseErr ctxt = hang (text "Empty list of alternatives in" <+> pp_ctxt)

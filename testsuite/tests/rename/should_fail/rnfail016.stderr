@@ -1,4 +1,5 @@
 
 rnfail016.hs:6:7: error:
-    Pattern syntax in expression context: x@x
+    Illegal @-pattern in expression:
+      x@x
     Did you mean to enable TypeApplications?

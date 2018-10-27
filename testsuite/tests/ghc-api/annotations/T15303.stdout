@@ -6,7 +6,6 @@
 [
 ((Test15303.hs:4:1-4,AnnCloseP), [Test15303.hs:4:4]),
 ((Test15303.hs:4:1-4,AnnOpenP), [Test15303.hs:4:1]),
-((Test15303.hs:4:1-4,AnnVal), [Test15303.hs:4:2-3]),
 ((Test15303.hs:4:1-66,AnnDcolon), [Test15303.hs:4:6-7]),
 ((Test15303.hs:4:1-66,AnnSemi), [Test15303.hs:5:1]),
 ((Test15303.hs:4:9-17,AnnDarrow), [Test15303.hs:4:19-20]),
@@ -24,7 +23,6 @@
 ((Test15303.hs:4:61-62,AnnVal), [Test15303.hs:4:62]),
 ((Test15303.hs:5:1-4,AnnCloseP), [Test15303.hs:5:4]),
 ((Test15303.hs:5:1-4,AnnOpenP), [Test15303.hs:5:1]),
-((Test15303.hs:5:1-4,AnnVal), [Test15303.hs:5:2-3]),
 ((Test15303.hs:5:1-15,AnnEqual), [Test15303.hs:5:6]),
 ((Test15303.hs:5:1-15,AnnFunId), [Test15303.hs:5:1-4]),
 ((Test15303.hs:5:1-15,AnnSemi), [Test15303.hs:6:1]),
@@ -33,3 +31,4 @@
 ((Test15303.hs:6:1-11,AnnVal), [Test15303.hs:6:8]),
 ((<no location info>,AnnEofPos), [Test15303.hs:7:1])
 ]
+

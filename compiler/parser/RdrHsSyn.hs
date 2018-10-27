@@ -21,7 +21,6 @@ module   RdrHsSyn (
         mkFamDecl, mkLHsSigType,
         mkInlinePragma,
         mkPatSynMatchGroup,
-        mkRecConstrOrUpdate, -- HsExp -> [HsFieldUpdate] -> P HsExp
         mkTyClD, mkInstD,
         mkRdrRecordCon, mkRdrRecordUpd,
         setRdrNameSpace,
@@ -30,7 +29,6 @@ module   RdrHsSyn (
         cvBindGroup,
         cvBindsAndSigs,
         cvTopDecls,
-        placeHolderPunRhs,
 
         -- Stuff to do with Foreign declarations
         mkImport,
@@ -43,15 +41,10 @@ module   RdrHsSyn (
 
         -- Bunch of functions in the parser monad for
         -- checking and constructing values
-        checkBlockArguments,
         checkPrecP,           -- Int -> P Int
         checkContext,         -- HsType -> P HsContext
-        checkPattern,         -- HsExp -> P HsPat
-        bang_RDR,
-        checkPatterns,        -- SrcLoc -> [HsExp] -> P [HsPat]
         checkMonadComp,       -- P (HsStmtContext RdrName)
         checkCommand,         -- LHsExpr RdrName -> P (LHsCmd RdrName)
-        checkValDef,          -- (SrcLoc, HsExp, HsRhs, [HsDecl]) -> P HsDecl
         checkValSigLhs,
         checkDoAndIfThenElse,
         LRuleTyTmVar, RuleTyTmVar(..),
@@ -59,7 +52,7 @@ module   RdrHsSyn (
         checkRuleTyVarBndrNames,
         checkRecordSyntax,
         checkEmptyGADTs,
-        parseErrorSDoc, hintBangPat,
+        parseErrorSDoc,
         TyEl(..), mergeOps, mergeDataCon,
 
         -- Help with processing exports
@@ -74,8 +67,6 @@ module   RdrHsSyn (
         warnStarIsType,
         failOpFewArgs,
 
-        SumOrTuple (..), mkSumOrTuple
-
     ) where
 
 import GhcPrelude
@@ -87,7 +78,6 @@ import CoAxiom          ( Role, fsFromRole )
 import RdrName
 import Name
 import BasicTypes
-import TcEvidence       ( idHsWrapper )
 import Lexer
 import Lexeme           ( isLexCon )
 import Type             ( TyThing(..), funTyCon )
@@ -943,29 +933,6 @@ checkTyClHdr is_cls ty
       = parseErrorSDoc l (text "Malformed head of type or class declaration:"
                           <+> ppr ty)
 
--- | Yield a parse error if we have a function applied directly to a do block
--- etc. and BlockArguments is not enabled.
-checkBlockArguments :: LHsExpr GhcPs -> P ()
-checkBlockArguments expr = case unLoc expr of
-    HsDo _ DoExpr _ -> check "do block"
-    HsDo _ MDoExpr _ -> check "mdo block"
-    HsLam {} -> check "lambda expression"
-    HsCase {} -> check "case expression"
-    HsLamCase {} -> check "lambda-case expression"
-    HsLet {} -> check "let expression"
-    HsIf {} -> check "if expression"
-    HsProc {} -> check "proc expression"
-    _ -> return ()
-  where
-    check element = do
-      pState <- getPState
-      unless (extopt LangExt.BlockArguments (options pState)) $
-        parseErrorSDoc (getLoc expr) $
-          text "Unexpected " <> text element <> text " in function application:"
-           $$ nest 4 (ppr expr)
-           $$ text "You could write it with parentheses"
-           $$ text "Or perhaps you meant to enable BlockArguments?"
-
 -- | Validate the context constraints and break up a context into a list
 -- of predicates.
 --
@@ -1006,201 +973,8 @@ checkNoDocs msg ty = go ty
                                   , text "on", msg, quotes (ppr t) ]
     go _ = pure ()
 
--- -------------------------------------------------------------------------
--- Checking Patterns.
-
--- We parse patterns as expressions and check for valid patterns below,
--- converting the expression into a pattern at the same time.
-
-checkPattern :: SDoc -> LHsExpr GhcPs -> P (LPat GhcPs)
-checkPattern msg e = checkLPat msg e
-
-checkPatterns :: SDoc -> [LHsExpr GhcPs] -> P [LPat GhcPs]
-checkPatterns msg es = mapM (checkPattern msg) es
-
-checkLPat :: SDoc -> LHsExpr GhcPs -> P (LPat GhcPs)
-checkLPat msg e@(L l _) = checkPat msg l e []
-
-checkPat :: SDoc -> SrcSpan -> LHsExpr GhcPs -> [LPat GhcPs]
-         -> P (LPat GhcPs)
-checkPat _ loc (L l e@(HsVar _ (L _ c))) args
-  | isRdrDataCon c = return (L loc (ConPatIn (L l c) (PrefixCon args)))
-  | not (null args) && patIsRec c =
-      patFail (text "Perhaps you intended to use RecursiveDo") l e
-checkPat msg loc e args     -- OK to let this happen even if bang-patterns
-                        -- are not enabled, because there is no valid
-                        -- non-bang-pattern parse of (C ! e)
-  | Just (e', args') <- splitBang e
-  = do  { args'' <- checkPatterns msg args'
-        ; checkPat msg loc e' (args'' ++ args) }
-checkPat msg loc (L _ (HsApp _ f e)) args
-  = do p <- checkLPat msg e
-       checkPat msg loc f (p : args)
-checkPat msg loc (L _ e) []
-  = do p <- checkAPat msg loc e
-       return (L loc p)
-checkPat msg loc e _
-  = patFail msg loc (unLoc e)
-
-checkAPat :: SDoc -> SrcSpan -> HsExpr GhcPs -> P (Pat GhcPs)
-checkAPat msg loc e0 = do
- pState <- getPState
- let opts = options pState
- case e0 of
-   EWildPat _ -> return (WildPat noExt)
-   HsVar _ x  -> return (VarPat noExt x)
-   HsLit _ (HsStringPrim _ _) -- (#13260)
-       -> parseErrorSDoc loc (text "Illegal unboxed string literal in pattern:" $$ ppr e0)
-
-   HsLit _ l  -> return (LitPat noExt l)
-
-   -- Overloaded numeric patterns (e.g. f 0 x = x)
-   -- Negation is recorded separately, so that the literal is zero or +ve
-   -- NB. Negative *primitive* literals are already handled by the lexer
-   HsOverLit _ pos_lit          -> return (mkNPat (L loc pos_lit) Nothing)
-   NegApp _ (L l (HsOverLit _ pos_lit)) _
-                        -> return (mkNPat (L l pos_lit) (Just noSyntaxExpr))
-
-   SectionR _ (L lb (HsVar _ (L _ bang))) e    -- (! x)
-        | bang == bang_RDR
-        -> do { hintBangPat loc e0
-              ; e' <- checkLPat msg e
-              ; addAnnotation loc AnnBang lb
-              ; return  (BangPat noExt e') }
-
-   ELazyPat _ e         -> checkLPat msg e >>= (return . (LazyPat noExt))
-   EAsPat _ n e         -> checkLPat msg e >>= (return . (AsPat noExt) n)
-   -- view pattern is well-formed if the pattern is
-   EViewPat _ expr patE -> checkLPat msg patE >>=
-                            (return . (\p -> ViewPat noExt expr p))
-   ExprWithTySig _ e t  -> do e <- checkLPat msg e
-                              return (SigPat noExt e t)
-
-   -- n+k patterns
-   OpApp _ (L nloc (HsVar _ (L _ n))) (L _ (HsVar _ (L _ plus)))
-           (L lloc (HsOverLit _ lit@(OverLit {ol_val = HsIntegral {}})))
-                      | extopt LangExt.NPlusKPatterns opts && (plus == plus_RDR)
-                      -> return (mkNPlusKPat (L nloc n) (L lloc lit))
-
-   OpApp _ l (L cl (HsVar _ (L _ c))) r
-     | isDataOcc (rdrNameOcc c) -> do
-         l <- checkLPat msg l
-         r <- checkLPat msg r
-         return (ConPatIn (L cl c) (InfixCon l r))
-
-   OpApp {}           -> patFail msg loc e0
-
-   ExplicitList _ _ es -> do ps <- mapM (checkLPat msg) es
-                             return (ListPat noExt ps)
-
-   HsPar _ e          -> checkLPat msg e >>= (return . (ParPat noExt))
-
-   ExplicitTuple _ es b
-     | all tupArgPresent es  -> do ps <- mapM (checkLPat msg)
-                                              [e | L _ (Present _ e) <- es]
-                                   return (TuplePat noExt ps b)
-     | otherwise -> parseErrorSDoc loc (text "Illegal tuple section in pattern:" $$ ppr e0)
-
-   ExplicitSum _ alt arity expr -> do
-     p <- checkLPat msg expr
-     return (SumPat noExt p alt arity)
-
-   RecordCon { rcon_con_name = c, rcon_flds = HsRecFields fs dd }
-                        -> do fs <- mapM (checkPatField msg) fs
-                              return (ConPatIn c (RecCon (HsRecFields fs dd)))
-   HsSpliceE _ s | not (isTypedSplice s)
-               -> return (SplicePat noExt s)
-   _           -> patFail msg loc e0
-
-placeHolderPunRhs :: LHsExpr GhcPs
--- The RHS of a punned record field will be filled in by the renamer
--- It's better not to make it an error, in case we want to print it when debugging
-placeHolderPunRhs = noLoc (HsVar noExt (noLoc pun_RDR))
-
-plus_RDR, bang_RDR, pun_RDR :: RdrName
-plus_RDR = mkUnqual varName (fsLit "+") -- Hack
-bang_RDR = mkUnqual varName (fsLit "!") -- Hack
-pun_RDR  = mkUnqual varName (fsLit "pun-right-hand-side")
-
-checkPatField :: SDoc -> LHsRecField GhcPs (LHsExpr GhcPs)
-              -> P (LHsRecField GhcPs (LPat GhcPs))
-checkPatField msg (L l fld) = do p <- checkLPat msg (hsRecFieldArg fld)
-                                 return (L l (fld { hsRecFieldArg = p }))
-
-patFail :: SDoc -> SrcSpan -> HsExpr GhcPs -> P a
-patFail msg loc e = parseErrorSDoc loc err
-    where err = text "Parse error in pattern:" <+> ppr e
-             $$ msg
-
-patIsRec :: RdrName -> Bool
-patIsRec e = e == mkUnqual varName (fsLit "rec")
-
-
 ---------------------------------------------------------------------------
 -- Check Equation Syntax
-
-checkValDef :: SDoc
-            -> SrcStrictness
-            -> LHsExpr GhcPs
-            -> Maybe (LHsType GhcPs)
-            -> Located (a,GRHSs GhcPs (LHsExpr GhcPs))
-            -> P ([AddAnn],HsBind GhcPs)
-
-checkValDef msg _strictness lhs (Just sig) grhss
-        -- x :: ty = rhs  parses as a *pattern* binding
-  = checkPatBind msg (L (combineLocs lhs sig)
-                        (ExprWithTySig noExt lhs (mkLHsSigWcType sig))) grhss
-
-checkValDef msg strictness lhs Nothing g@(L l (_,grhss))
-  = do  { mb_fun <- isFunLhs lhs
-        ; case mb_fun of
-            Just (fun, is_infix, pats, ann) ->
-              checkFunBind msg strictness ann (getLoc lhs)
-                           fun is_infix pats (L l grhss)
-            Nothing -> checkPatBind msg lhs g }
-
-checkFunBind :: SDoc
-             -> SrcStrictness
-             -> [AddAnn]
-             -> SrcSpan
-             -> Located RdrName
-             -> LexicalFixity
-             -> [LHsExpr GhcPs]
-             -> Located (GRHSs GhcPs (LHsExpr GhcPs))
-             -> P ([AddAnn],HsBind GhcPs)
-checkFunBind msg strictness ann lhs_loc fun is_infix pats (L rhs_span grhss)
-  = do  ps <- checkPatterns msg pats
-        let match_span = combineSrcSpans lhs_loc rhs_span
-        -- Add back the annotations stripped from any HsPar values in the lhs
-        -- mapM_ (\a -> a match_span) ann
-        return (ann, makeFunBind fun
-                  [L match_span (Match { m_ext = noExt
-                                       , m_ctxt = FunRhs { mc_fun    = fun
-                                                         , mc_fixity = is_infix
-                                                         , mc_strictness = strictness }
-                                       , m_pats = ps
-                                       , m_grhss = grhss })])
-        -- The span of the match covers the entire equation.
-        -- That isn't quite right, but it'll do for now.
-
-makeFunBind :: Located RdrName -> [LMatch GhcPs (LHsExpr GhcPs)]
-            -> HsBind GhcPs
--- Like HsUtils.mkFunBind, but we need to be able to set the fixity too
-makeFunBind fn ms
-  = FunBind { fun_ext = noExt,
-              fun_id = fn,
-              fun_matches = mkMatchGroup FromSource ms,
-              fun_co_fn = idHsWrapper,
-              fun_tick = [] }
-
-checkPatBind :: SDoc
-             -> LHsExpr GhcPs
-             -> Located (a,GRHSs GhcPs (LHsExpr GhcPs))
-             -> P ([AddAnn],HsBind GhcPs)
-checkPatBind msg lhs (L _ (_,grhss))
-  = do  { lhs <- checkPattern msg lhs
-        ; return ([],PatBind noExt lhs grhss
-                    ([],[])) }
 
 checkValSigLhs :: LHsExpr GhcPs -> P (Located RdrName)
 checkValSigLhs (L _ (HsVar _ lrdr@(L _ v)))
@@ -1255,80 +1029,6 @@ checkDoAndIfThenElse guardExpr semiThen thenExpr semiElse elseExpr
                  text "then" <+> ppr thenExpr  <> pprOptSemi semiElse <+>
                  text "else" <+> ppr elseExpr
 
-
-        -- The parser left-associates, so there should
-        -- not be any OpApps inside the e's
-splitBang :: LHsExpr GhcPs -> Maybe (LHsExpr GhcPs, [LHsExpr GhcPs])
--- Splits (f ! g a b) into (f, [(! g), a, b])
-splitBang (L _ (OpApp _ l_arg bang@(L _ (HsVar _ (L _ op))) r_arg))
-  | op == bang_RDR = Just (l_arg, L l' (SectionR noExt bang arg1) : argns)
-  where
-    l' = combineLocs bang arg1
-    (arg1,argns) = split_bang r_arg []
-    split_bang (L _ (HsApp _ f e)) es = split_bang f (e:es)
-    split_bang e                   es = (e,es)
-splitBang _ = Nothing
-
--- See Note [isFunLhs vs mergeDataCon]
-isFunLhs :: LHsExpr GhcPs
-      -> P (Maybe (Located RdrName, LexicalFixity, [LHsExpr GhcPs],[AddAnn]))
--- A variable binding is parsed as a FunBind.
--- Just (fun, is_infix, arg_pats) if e is a function LHS
---
--- The whole LHS is parsed as a single expression.
--- Any infix operators on the LHS will parse left-associatively
--- E.g.         f !x y !z
---      will parse (rather strangely) as
---              (f ! x y) ! z
---      It's up to isFunLhs to sort out the mess
---
--- a .!. !b
-
-isFunLhs e = go e [] []
- where
-   go (L loc (HsVar _ (L _ f))) es ann
-        | not (isRdrDataCon f)        = return (Just (L loc f, Prefix, es, ann))
-   go (L _ (HsApp _ f e)) es       ann = go f (e:es) ann
-   go (L l (HsPar _ e))   es@(_:_) ann = go e es (ann ++ mkParensApiAnn l)
-
-        -- Things of the form `!x` are also FunBinds
-        -- See Note [FunBind vs PatBind]
-   go (L _ (SectionR _ (L _ (HsVar _ (L _ bang))) (L l (HsVar _ (L _ var)))))
-                                                                         [] ann
-        | bang == bang_RDR
-        , not (isRdrDataCon var)     = return (Just (L l var, Prefix, [], ann))
-
-        -- For infix function defns, there should be only one infix *function*
-        -- (though there may be infix *datacons* involved too).  So we don't
-        -- need fixity info to figure out which function is being defined.
-        --      a `K1` b `op` c `K2` d
-        -- must parse as
-        --      (a `K1` b) `op` (c `K2` d)
-        -- The renamer checks later that the precedences would yield such a parse.
-        --
-        -- There is a complication to deal with bang patterns.
-        --
-        -- ToDo: what about this?
-        --              x + 1 `op` y = ...
-
-   go e@(L loc (OpApp _ l (L loc' (HsVar _ (L _ op))) r)) es ann
-        | Just (e',es') <- splitBang e
-        = do { bang_on <- extension bangPatEnabled
-             ; if bang_on then go e' (es' ++ es) ann
-               else return (Just (L loc' op, Infix, (l:r:es), ann)) }
-                -- No bangs; behave just like the next case
-        | not (isRdrDataCon op)         -- We have found the function!
-        = return (Just (L loc' op, Infix, (l:r:es), ann))
-        | otherwise                     -- Infix data con; keep going
-        = do { mb_l <- go l es ann
-             ; case mb_l of
-                 Just (op', Infix, j : k : es', ann')
-                   -> return (Just (op', Infix, j : op_app : es', ann'))
-                   where
-                     op_app = L loc (OpApp noExt k
-                                       (L loc' (HsVar noExt (L loc' op))) r)
-                 _ -> return Nothing }
-   go _ _ _ = return Nothing
 
 -- | Either an operator or an operand.
 data TyEl = TyElOpr RdrName | TyElOpd (HsType GhcPs)
@@ -1767,6 +1467,7 @@ checkCommand lc = locMap checkCmd lc
 locMap :: (SrcSpan -> a -> P b) -> Located a -> P (Located b)
 locMap f (L l a) = f l a >>= (\b -> return $ L l b)
 
+-- TODO (int-index): remove this
 checkCmd :: SrcSpan -> HsExpr GhcPs -> P (HsCmd GhcPs)
 checkCmd _ (HsArrApp _ e1 e2 haat b) =
     return $ HsCmdArrApp noExt e1 e2 haat b
@@ -1867,19 +1568,6 @@ checkPrecP (L l (_,i)) (L _ ol)
     specialOp op = unLoc op `elem` [ eqTyCon_RDR
                                    , getRdrName funTyCon ]
 
-mkRecConstrOrUpdate
-        :: LHsExpr GhcPs
-        -> SrcSpan
-        -> ([LHsRecField GhcPs (LHsExpr GhcPs)], Bool)
-        -> P (HsExpr GhcPs)
-
-mkRecConstrOrUpdate (L l (HsVar _ (L _ c))) _ (fs,dd)
-  | isRdrDataCon c
-  = return (mkRdrRecordCon (L l c) (mk_rec_fields fs dd))
-mkRecConstrOrUpdate exp@(L l _) _ (fs,dd)
-  | dd        = parseErrorSDoc l (text "You cannot use `..' in a record update")
-  | otherwise = return (mkRdrRecordUpd exp (map (fmap mk_rec_upd_field) fs))
-
 mkRdrRecordUpd :: LHsExpr GhcPs -> [LHsRecUpdField GhcPs] -> HsExpr GhcPs
 mkRdrRecordUpd exp flds
   = RecordUpd { rupd_ext  = noExt
@@ -1889,16 +1577,6 @@ mkRdrRecordUpd exp flds
 mkRdrRecordCon :: Located RdrName -> HsRecordBinds GhcPs -> HsExpr GhcPs
 mkRdrRecordCon con flds
   = RecordCon { rcon_ext = noExt, rcon_con_name = con, rcon_flds = flds }
-
-mk_rec_fields :: [LHsRecField id arg] -> Bool -> HsRecFields id arg
-mk_rec_fields fs False = HsRecFields { rec_flds = fs, rec_dotdot = Nothing }
-mk_rec_fields fs True  = HsRecFields { rec_flds = fs, rec_dotdot = Just (length fs) }
-
-mk_rec_upd_field :: HsRecField GhcPs (LHsExpr GhcPs) -> HsRecUpdField GhcPs
-mk_rec_upd_field (HsRecField (L loc (FieldOcc _ rdr)) arg pun)
-  = HsRecField (L loc (Unambiguous noExt rdr)) arg pun
-mk_rec_upd_field (HsRecField (L _ (XFieldOcc _)) _ _)
-  = panic "mk_rec_upd_field"
 
 mkInlinePragma :: SourceText -> (InlineSpec, RuleMatchInfo) -> Maybe Activation
                -> InlinePragma
@@ -2190,35 +1868,6 @@ failOpStrictnessPosition (L loc _) = parseErrorSDoc loc msg
 
 parseErrorSDoc :: SrcSpan -> SDoc -> P a
 parseErrorSDoc span s = failSpanMsgP span s
-
--- | Hint about bang patterns, assuming @BangPatterns@ is off.
-hintBangPat :: SrcSpan -> HsExpr GhcPs -> P ()
-hintBangPat span e = do
-    bang_on <- extension bangPatEnabled
-    unless bang_on $
-      parseErrorSDoc span
-        (text "Illegal bang-pattern (use BangPatterns):" $$ ppr e)
-
-data SumOrTuple
-  = Sum ConTag Arity (LHsExpr GhcPs)
-  | Tuple [LHsTupArg GhcPs]
-
-mkSumOrTuple :: Boxity -> SrcSpan -> SumOrTuple -> P (HsExpr GhcPs)
-
--- Tuple
-mkSumOrTuple boxity _ (Tuple es) = return (ExplicitTuple noExt es boxity)
-
--- Sum
-mkSumOrTuple Unboxed _ (Sum alt arity e) =
-    return (ExplicitSum noExt alt arity e)
-mkSumOrTuple Boxed l (Sum alt arity (L _ e)) =
-    parseErrorSDoc l (hang (text "Boxed sums not supported:") 2 (ppr_boxed_sum alt arity e))
-  where
-    ppr_boxed_sum :: ConTag -> Arity -> HsExpr GhcPs -> SDoc
-    ppr_boxed_sum alt arity e =
-      text "(" <+> ppr_bars (alt - 1) <+> ppr e <+> ppr_bars (arity - alt) <+> text ")"
-
-    ppr_bars n = hsep (replicate n (Outputable.char '|'))
 
 mkLHsOpTy :: LHsType GhcPs -> Located RdrName -> LHsType GhcPs -> LHsType GhcPs
 mkLHsOpTy x op y =

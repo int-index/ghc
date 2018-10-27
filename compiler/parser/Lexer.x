@@ -2602,6 +2602,8 @@ srcParseErr options buf len
          else text "parse error on input" <+> quotes (text token)
               $$ ppWhen (not th_enabled && token == "$") -- #7396
                         (text "Perhaps you intended to use TemplateHaskell")
+                 -- TODO (int-index): add a dedicated test case for #7396,
+                 -- and probably remove this check (it is duplicated in ExpPatFrame)
               $$ ppWhen (token == "<-")
                         (if mdoInLast100
                            then text "Perhaps you intended to use RecursiveDo"

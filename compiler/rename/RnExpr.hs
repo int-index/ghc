@@ -133,6 +133,9 @@ rnExpr (HsVar _ (L l v))
                      , mkFVs fs);
            Just (Right [])         -> panic "runExpr/HsVar" } }
 
+rnExpr (HsUnboundVar x v)
+  = return (HsUnboundVar x v, emptyFVs)
+
 rnExpr (HsIPVar x v)
   = return (HsIPVar x v, emptyFVs)
 
@@ -143,6 +146,8 @@ rnExpr (HsOverLabel x _ v)
                  ; return (HsOverLabel x (Just fromLabel) v, unitFV fromLabel) }
          else return (HsOverLabel x Nothing v, emptyFVs) }
 
+-- TODO (int-index): move this logic to 'checkExpr'
+-- in ExpPatFrame.hs
 rnExpr (HsLit x lit@(HsString src s))
   = do { opt_OverloadedStrings <- xoptM LangExt.OverloadedStrings
        ; if opt_OverloadedStrings then
@@ -413,9 +418,11 @@ rnExpr e@(HsArrForm {}) = arrowFail e
 rnExpr other = pprPanic "rnExpr: unexpected expression" (ppr other)
         -- HsWrap
 
+-- TODO (int-index): I copied this to ExpPatFrame - remove duplication
 hsHoleExpr :: HsExpr (GhcPass id)
 hsHoleExpr = HsUnboundVar noExt (TrueExprHole (mkVarOcc "_"))
 
+-- TODO (int-index): do this in ExpPatFrame
 arrowFail :: HsExpr GhcPs -> RnM (HsExpr GhcRn, FreeVars)
 arrowFail e
   = do { addErr (vcat [ text "Arrow command found where an expression was expected:"

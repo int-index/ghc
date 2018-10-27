@@ -385,7 +385,9 @@ rnPatAndThen mk (ParPat x pat)  = do { pat' <- rnLPatAndThen mk pat
                                      ; return (ParPat x pat') }
 rnPatAndThen mk (LazyPat x pat) = do { pat' <- rnLPatAndThen mk pat
                                      ; return (LazyPat x pat') }
-rnPatAndThen mk (BangPat x pat) = do { pat' <- rnLPatAndThen mk pat
+rnPatAndThen mk p@(BangPat x pat) =
+                                  do { liftCps (checkBangPatterns p)
+                                     ; pat' <- rnLPatAndThen mk pat
                                      ; return (BangPat x pat') }
 rnPatAndThen mk (VarPat x (L l rdr)) = do { loc <- liftCps getSrcSpanM
                                           ; name <- newPatName mk (L loc rdr)
@@ -500,6 +502,11 @@ rnPatAndThen mk (SplicePat _ splice)
 
 rnPatAndThen _ pat = pprPanic "rnLPatAndThen" (ppr pat)
 
+checkBangPatterns :: Outputable pat => pat -> RnM ()
+checkBangPatterns pat =
+  unlessM (xoptM LangExt.BangPatterns) $
+    addErr (text "Illegal bang pattern:" <+> ppr pat $$
+            text "Did you mean to enable BangPatterns?")
 
 --------------------
 rnConPatAndThen :: NameMaker
