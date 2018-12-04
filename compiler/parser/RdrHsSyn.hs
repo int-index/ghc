@@ -153,7 +153,7 @@ mkClassDecl loc (dL->L _ (mcxt, tycl_hdr)) fds where_cls
        ; let cxt = fromMaybe (noLoc []) mcxt
        ; (cls, tparams, fixity, ann) <- checkTyClHdr True tycl_hdr
        ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (text "class") whereDots cls tparams
+       ; tyvars <- checkTyVarsP (text "class") whereDots cls tparams TvbNoBraces
        ; (at_defs, anns) <- fmap unzip $ mapM (eitherToP . mkATDefault) at_insts
        ; sequence_ anns
        ; return (cL loc (ClassDecl { tcdCExt = noExt, tcdCtxt = cxt
@@ -179,7 +179,7 @@ mkATDefault :: LTyFamInstDecl GhcPs
 mkATDefault (dL->L loc (TyFamInstDecl { tfid_eqn = HsIB { hsib_body = e }}))
       | FamEqn { feqn_tycon = tc, feqn_bndrs = bndrs, feqn_pats = pats
                , feqn_fixity = fixity, feqn_rhs = rhs } <- e
-      = do { (tvs, anns) <- checkTyVars (text "default") equalsDots tc pats
+      = do { (tvs, anns) <- checkTyVars (text "default") equalsDots tc pats TvbNoBraces
            ; let f = cL loc (FamEqn { feqn_ext    = noExt
                                     , feqn_tycon  = tc
                                     , feqn_bndrs  = ASSERT( isNothing bndrs )
@@ -205,7 +205,7 @@ mkTyData loc new_or_data cType (dL->L _ (mcxt, tycl_hdr))
          ksig data_cons maybe_deriv
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False tycl_hdr
        ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (ppr new_or_data) equalsDots tc tparams
+       ; tyvars <- checkTyVarsP (ppr new_or_data) equalsDots tc tparams TvbNoBraces
        ; defn <- mkDataDefn new_or_data cType mcxt ksig data_cons maybe_deriv
        ; return (cL loc (DataDecl { tcdDExt = noExt,
                                     tcdLName = tc, tcdTyVars = tyvars,
@@ -237,7 +237,7 @@ mkTySynonym :: SrcSpan
 mkTySynonym loc lhs rhs
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False lhs
        ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (text "type") equalsDots tc tparams
+       ; tyvars <- checkTyVarsP (text "type") equalsDots tc tparams TvbNoBraces
        ; return (cL loc (SynDecl { tcdSExt = noExt
                                  , tcdLName = tc, tcdTyVars = tyvars
                                  , tcdFixity = fixity
@@ -295,7 +295,7 @@ mkFamDecl :: SrcSpan
 mkFamDecl loc info lhs ksig injAnn
   = do { (tc, tparams, fixity, ann) <- checkTyClHdr False lhs
        ; mapM_ (\a -> a loc) ann -- Add any API Annotations to the top SrcSpan
-       ; tyvars <- checkTyVarsP (ppr info) equals_or_where tc tparams
+       ; tyvars <- checkTyVarsP (ppr info) equals_or_where tc tparams TvbNoBraces
        ; return (cL loc (FamDecl noExt (FamilyDecl
                                            { fdExt       = noExt
                                            , fdInfo      = info, fdLName = tc
@@ -805,10 +805,11 @@ really doesn't matter!
 -}
 
 checkTyVarsP :: SDoc -> SDoc -> Located RdrName -> [LHsType GhcPs]
+             -> TvbBraces
              -> P (LHsQTyVars GhcPs)
 -- Same as checkTyVars, but in the P monad
-checkTyVarsP pp_what equals_or_where tc tparms
-  = do { let checkedTvs = checkTyVars pp_what equals_or_where tc tparms
+checkTyVarsP pp_what equals_or_where tc tparms braces
+  = do { let checkedTvs = checkTyVars pp_what equals_or_where tc tparms braces
        ; (tvs, anns) <- eitherToP checkedTvs
        ; anns
        ; pure tvs }
@@ -819,6 +820,7 @@ eitherToP (Left (loc, doc)) = parseErrorSDoc loc doc
 eitherToP (Right thing)     = return thing
 
 checkTyVars :: SDoc -> SDoc -> Located RdrName -> [LHsType GhcPs]
+            -> TvbBraces
             -> Either (SrcSpan, SDoc)
                       ( LHsQTyVars GhcPs  -- the synthesized type variables
                       , P () )            -- action which adds annotations
@@ -826,7 +828,7 @@ checkTyVars :: SDoc -> SDoc -> Located RdrName -> [LHsType GhcPs]
 -- (possibly with a kind signature).
 -- We use the Either monad because it's also called (via 'mkATDefault') from
 -- "Convert".
-checkTyVars pp_what equals_or_where tc tparms
+checkTyVars pp_what equals_or_where tc tparms braces
   = do { (tvs, anns) <- fmap unzip $ mapM (chkParens []) tparms
        ; return (mkHsQTvs tvs, sequence_ anns) }
   where
@@ -841,9 +843,9 @@ checkTyVars pp_what equals_or_where tc tparms
 
         -- Check that the name space is correct!
     chk (dL->L l (HsKindSig _ (dL->L lv (HsTyVar _ _ (dL->L _ tv))) k))
-        | isRdrTyVar tv    = return (cL l (KindedTyVar noExt (cL lv tv) k))
+        | isRdrTyVar tv    = return (cL l (KindedTyVar noExt (cL lv tv) k braces))
     chk (dL->L l (HsTyVar _ _ (dL->L ltv tv)))
-        | isRdrTyVar tv    = return (cL l (UserTyVar noExt (cL ltv tv)))
+        | isRdrTyVar tv    = return (cL l (UserTyVar noExt (cL ltv tv) braces))
     chk t@(dL->L loc _)
         = Left (loc,
                 vcat [ text "Unexpected type" <+> quotes (ppr t)
@@ -890,11 +892,11 @@ mkRuleBndrs = fmap (fmap cvt_one)
           RuleBndrSig noExt v (mkLHsSigWcType sig)
 
 -- turns RuleTyTmVars into HsTyVarBndrs - this is more interesting
-mkRuleTyVarBndrs :: [LRuleTyTmVar] -> [LHsTyVarBndr GhcPs]
-mkRuleTyVarBndrs = fmap (fmap cvt_one)
-  where cvt_one (RuleTyTmVar v Nothing)    = UserTyVar   noExt (fmap tm_to_ty v)
+mkRuleTyVarBndrs :: TvbBraces -> [LRuleTyTmVar] -> [LHsTyVarBndr GhcPs]
+mkRuleTyVarBndrs braces = fmap (fmap cvt_one)
+  where cvt_one (RuleTyTmVar v Nothing)    = UserTyVar   noExt (fmap tm_to_ty v) braces
         cvt_one (RuleTyTmVar v (Just sig))
-          = KindedTyVar noExt (fmap tm_to_ty v) sig
+          = KindedTyVar noExt (fmap tm_to_ty v) sig braces
     -- takes something in namespace 'varName' to something in namespace 'tvName'
         tm_to_ty (Unqual occ) = Unqual (setOccNameSpace tvName occ)
         tm_to_ty _ = panic "mkRuleTyVarBndrs"

@@ -1848,13 +1848,13 @@ bindExplicitTKBndrsX tc_tv hs_tvs thing_inside
 tcHsTyVarBndr :: (Name -> Kind -> TcM TyVar)
               -> HsTyVarBndr GhcRn -> TcM TcTyVar
 -- Returned TcTyVar has the same name; no cloning
-tcHsTyVarBndr new_tv (UserTyVar _ (L _ tv_nm))
+tcHsTyVarBndr new_tv (UserTyVar _ (L _ tv_nm) _)
   = do { kind <- newMetaKindVar
        ; new_tv tv_nm kind }
-tcHsTyVarBndr new_tv (KindedTyVar _ (L _ tv_nm) lhs_kind)
+tcHsTyVarBndr new_tv (KindedTyVar _ (L _ tv_nm) lhs_kind _)
   = do { kind <- tcLHsKindSig (TyVarBndrKindCtxt tv_nm) lhs_kind
        ; new_tv tv_nm kind }
-tcHsTyVarBndr _ (XTyVarBndr _) = panic "tcHsTyVarBndr"
+tcHsTyVarBndr _ (XTyVarBndr _ _) = panic "tcHsTyVarBndr"
 
 -----------------
 tcHsQTyVarBndr :: ContextKind
@@ -1863,14 +1863,14 @@ tcHsQTyVarBndr :: ContextKind
 -- Just like tcHsTyVarBndr, but also
 --   - uses the in-scope TyVar from class, if it exists
 --   - takes a ContextKind to use for the no-sig case
-tcHsQTyVarBndr ctxt_kind new_tv (UserTyVar _ (L _ tv_nm))
+tcHsQTyVarBndr ctxt_kind new_tv (UserTyVar _ (L _ tv_nm) _)
   = do { mb_tv <- tcLookupLcl_maybe tv_nm
        ; case mb_tv of
            Just (ATyVar _ tv) -> return tv
            _ -> do { kind <- newExpectedKind ctxt_kind
                    ; new_tv tv_nm kind } }
 
-tcHsQTyVarBndr _ new_tv (KindedTyVar _ (L _ tv_nm) lhs_kind)
+tcHsQTyVarBndr _ new_tv (KindedTyVar _ (L _ tv_nm) lhs_kind _)
   = do { kind <- tcLHsKindSig (TyVarBndrKindCtxt tv_nm) lhs_kind
        ; mb_tv <- tcLookupLcl_maybe tv_nm
        ; case mb_tv of
@@ -1887,7 +1887,7 @@ tcHsQTyVarBndr _ new_tv (KindedTyVar _ (L _ tv_nm) lhs_kind)
     hs_tv = HsTyVar noExt NotPromoted (noLoc tv_nm)
             -- Used for error messages only
 
-tcHsQTyVarBndr _ _ (XTyVarBndr _) = panic "tcHsTyVarBndr"
+tcHsQTyVarBndr _ _ (XTyVarBndr _ _) = panic "tcHsTyVarBndr"
 
 
 --------------------------------------

@@ -91,7 +91,7 @@ import GhcPrelude
 import qualified GHC.LanguageExtensions as LangExt
 }
 
-%expect 236 -- shift/reduce conflicts
+%expect 258 -- shift/reduce conflicts
 
 {- Last updated: 04 June 2018
 
@@ -2089,8 +2089,13 @@ tv_bndrs :: { [LHsTyVarBndr GhcPs] }
          | {- empty -}                  { [] }
 
 tv_bndr :: { LHsTyVarBndr GhcPs }
-        : tyvar                         { sL1 $1 (UserTyVar noExt $1) }
-        | '(' tyvar '::' kind ')'       {% ams (sLL $1 $>  (KindedTyVar noExt $2 $4))
+        : tyvar                         { sL1 $1 (UserTyVar noExt $1 TvbNoBraces) }
+        | '{' tyvar '}'                 {% ams (sLL $1 $> (UserTyVar noExt $2 TvbHasBraces))
+                                               [moc $1,mcc $3] }
+        | '{' tyvar '::' kind '}'       {% ams (sLL $1 $>  (KindedTyVar noExt $2 $4 TvbHasBraces))
+                                               [mop $1,mu AnnDcolon $3
+                                               ,mcp $5] }
+        | '(' tyvar '::' kind ')'       {% ams (sLL $1 $>  (KindedTyVar noExt $2 $4 TvbNoBraces))
                                                [mop $1,mu AnnDcolon $3
                                                ,mcp $5] }
 

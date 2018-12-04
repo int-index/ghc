@@ -373,15 +373,17 @@ mkHsStringPrimLit fs
   = HsStringPrim NoSourceText (fastStringToByteString fs)
 
 -------------
-userHsLTyVarBndrs :: SrcSpan -> [Located (IdP (GhcPass p))]
+userHsLTyVarBndrs :: [TvbBraces] -> SrcSpan -> [Located (IdP (GhcPass p))]
                   -> [LHsTyVarBndr (GhcPass p)]
 -- Caller sets location
-userHsLTyVarBndrs loc bndrs = [ cL loc (UserTyVar noExt v) | v <- bndrs ]
+userHsLTyVarBndrs braces loc bndrs =
+    (cL loc . uncurry id) <$> zip [ UserTyVar noExt v | v <- bndrs ] braces
 
-userHsTyVarBndrs :: SrcSpan -> [IdP (GhcPass p)] -> [LHsTyVarBndr (GhcPass p)]
+userHsTyVarBndrs :: [TvbBraces] -> SrcSpan -> [IdP (GhcPass p)]
+                 -> [LHsTyVarBndr (GhcPass p)]
 -- Caller sets location
-userHsTyVarBndrs loc bndrs = [ cL loc (UserTyVar noExt (cL loc v))
-                             | v <- bndrs ]
+userHsTyVarBndrs braces loc bndrs =
+    (cL loc . uncurry id) <$> zip [ UserTyVar noExt (cL loc v) | v <- bndrs ] braces
 
 
 {-
@@ -645,13 +647,13 @@ mkClassOpSigs sigs
       = cL loc (ClassOpSig noExt False nms (dropWildCards ty))
     fiddle sig = sig
 
-typeToLHsType :: Type -> LHsType GhcPs
+typeToLHsType :: TvbBraces -> Type -> LHsType GhcPs
 -- ^ Converting a Type to an HsType RdrName
 -- This is needed to implement GeneralizedNewtypeDeriving.
 --
 -- Note that we use 'getRdrName' extensively, which
 -- generates Exact RdrNames rather than strings.
-typeToLHsType ty
+typeToLHsType brace ty
   = go ty
   where
     go :: Type -> LHsType GhcPs
@@ -690,7 +692,7 @@ typeToLHsType ty
 
     go_tv :: TyVar -> LHsTyVarBndr GhcPs
     go_tv tv = noLoc $ KindedTyVar noExt (noLoc (getRdrName tv))
-                                   (go (tyVarKind tv))
+                                   (go (tyVarKind tv)) brace
 
 {-
 Note [Kind signatures in typeToLHsType]

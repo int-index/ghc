@@ -1052,18 +1052,18 @@ addTyClTyVarBinds tvs m
 --
 repTyVarBndrWithKind :: LHsTyVarBndr GhcRn
                      -> Core TH.Name -> DsM (Core TH.TyVarBndrQ)
-repTyVarBndrWithKind (dL->L _ (UserTyVar _ _)) nm
+repTyVarBndrWithKind (dL->L _ (UserTyVar _ _ _)) nm
   = repPlainTV nm
-repTyVarBndrWithKind (dL->L _ (KindedTyVar _ _ ki)) nm
+repTyVarBndrWithKind (dL->L _ (KindedTyVar _ _ ki _)) nm
   = repLTy ki >>= repKindedTV nm
 repTyVarBndrWithKind _ _ = panic "repTyVarBndrWithKind"
 
 -- | Represent a type variable binder
 repTyVarBndr :: LHsTyVarBndr GhcRn -> DsM (Core TH.TyVarBndrQ)
-repTyVarBndr (dL->L _ (UserTyVar _ (dL->L _ nm)) )
+repTyVarBndr (dL->L _ (UserTyVar _ (dL->L _ nm) _) )
   = do { nm' <- lookupBinder nm
        ; repPlainTV nm' }
-repTyVarBndr (dL->L _ (KindedTyVar _ (dL->L _ nm) ki))
+repTyVarBndr (dL->L _ (KindedTyVar _ (dL->L _ nm) ki _))
   = do { nm' <- lookupBinder nm
        ; ki' <- repLTy ki
        ; repKindedTV nm' ki' }

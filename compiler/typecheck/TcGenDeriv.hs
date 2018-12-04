@@ -529,7 +529,7 @@ unliftedCompare lt_op eq_op a_expr b_expr lt eq gt
                         -- mean more tests (dynamically)
         nlHsIf (ascribeBool $ genPrimOpApp a_expr eq_op b_expr) eq gt
   where
-    ascribeBool e = nlExprWithTySig e boolTy
+    ascribeBool e = nlExprWithTySig TvbNoBraces e boolTy
 
 nlConWildPat :: DataCon -> LPat GhcPs
 -- The pattern (K {})
@@ -1849,17 +1849,18 @@ gen_Newtype_binds loc cls inst_tvs inst_tys rhs_ty
         (_, _, to_tau)   = tcSplitSigmaTy to_ty
 
         meth_RDR = getRdrName meth_id
-
+        nlHsAppType' = nlHsAppType TvbNoBraces
+        nlExprWithTySig' = nlExprWithTySig TvbNoBraces
         rhs_expr = nlHsVar (getRdrName coerceId)
-                                      `nlHsAppType`     from_tau
-                                      `nlHsAppType`     to_tau
+                                      `nlHsAppType'`     from_tau
+                                      `nlHsAppType'`     to_tau
                                       `nlHsApp`         meth_app
-                                      `nlExprWithTySig` to_ty
+                                      `nlExprWithTySig'` to_ty
 
         -- The class method, applied to all of the class instance types
         -- (including the representation type) to avoid potential ambiguity.
         -- See Note [GND and ambiguity]
-        meth_app = foldl' nlHsAppType (nlHsVar meth_RDR) $
+        meth_app = foldl' (nlHsAppType TvbNoBraces) (nlHsVar meth_RDR) $
                    filterOutInferredTypes (classTyCon cls) underlying_inst_tys
                      -- Filter out any inferred arguments, since they can't be
                      -- applied with visible type application.
@@ -1894,15 +1895,15 @@ gen_Newtype_binds loc cls inst_tvs inst_tys rhs_ty
     underlying_inst_tys :: [Type]
     underlying_inst_tys = changeLast inst_tys rhs_ty
 
-nlHsAppType :: LHsExpr GhcPs -> Type -> LHsExpr GhcPs
-nlHsAppType e s = noLoc (HsAppType noExt e hs_ty)
+nlHsAppType :: TvbBraces -> LHsExpr GhcPs -> Type -> LHsExpr GhcPs
+nlHsAppType braces e s = noLoc (HsAppType noExt e hs_ty)
   where
-    hs_ty = mkHsWildCardBndrs $ parenthesizeHsType appPrec (typeToLHsType s)
+    hs_ty = mkHsWildCardBndrs $ parenthesizeHsType appPrec (typeToLHsType braces s)
 
-nlExprWithTySig :: LHsExpr GhcPs -> Type -> LHsExpr GhcPs
-nlExprWithTySig e s = noLoc $ ExprWithTySig noExt (parenthesizeHsExpr sigPrec e) hs_ty
+nlExprWithTySig :: TvbBraces -> LHsExpr GhcPs -> Type -> LHsExpr GhcPs
+nlExprWithTySig braces e s = noLoc $ ExprWithTySig noExt (parenthesizeHsExpr sigPrec e) hs_ty
   where
-    hs_ty = mkLHsSigWcType (typeToLHsType s)
+    hs_ty = mkLHsSigWcType (typeToLHsType braces s)
 
 mkCoerceClassMethEqn :: Class   -- the class being derived
                      -> [TyVar] -- the tvs in the instance head (this includes
