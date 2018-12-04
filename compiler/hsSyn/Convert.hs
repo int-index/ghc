@@ -62,9 +62,9 @@ convertToPat :: SrcSpan -> TH.Pat -> Either MsgDoc (LPat GhcPs)
 convertToPat loc p
   = initCvt loc $ wrapMsg "pattern" p $ cvtPat p
 
-convertToHsType :: SrcSpan -> TH.Type -> Either MsgDoc (LHsType GhcPs)
-convertToHsType loc t
-  = initCvt loc $ wrapMsg "type" t $ cvtType t
+convertToHsType :: SrcSpan -> TH.Type -> [TvbBraces] -> Either MsgDoc (LHsType GhcPs)
+convertToHsType loc t bracesList
+  = initCvt loc $ wrapMsg "type" t $ cvtType bracesList t
 
 -------------------------------------------------------------------
 newtype CvtM a = CvtM { unCvtM :: SrcSpan -> Either MsgDoc (SrcSpan, a) }
@@ -169,7 +169,7 @@ cvtDec (TH.FunD nm cls)
 
 cvtDec (TH.SigD nm typ)
   = do  { nm' <- vNameL nm
-        ; ty' <- cvtType typ
+        ; ty' <- cvtType [TvbHasBraces, TvbNoBraces] typ
         ; returnJustL $ Hs.SigD noExt
                                     (TypeSig noExt [nm'] (mkLHsSigWcType ty')) }
 
@@ -187,7 +187,7 @@ cvtDec (PragmaD prag)
 
 cvtDec (TySynD tc tvs rhs)
   = do  { (_, tc', tvs') <- cvt_tycl_hdr [] tc tvs
-        ; rhs' <- cvtType rhs
+        ; rhs' <- cvtType TySynD rhs
         ; returnJustL $ TyClD noExt $
           SynDecl { tcdSExt = noExt, tcdLName = tc', tcdTyVars = tvs'
                   , tcdFixity = Prefix
@@ -206,7 +206,7 @@ cvtDec (DataD ctxt tc tvs ksig constrs derivs)
         ; unless (isNothing ksig || isGadtDecl)
                  (failWith (text "Kind signatures are only allowed on GADTs"))
         ; (ctxt', tc', tvs') <- cvt_tycl_hdr ctxt tc tvs
-        ; ksig' <- cvtKind `traverse` ksig
+        ; ksig' <- (cvtKind [TvbHasBraces, TvbNoBraces]) `traverse` ksig
         ; cons' <- mapM cvtConstr constrs
         ; derivs' <- cvtDerivs derivs
         ; let defn = HsDataDefn { dd_ext = noExt
@@ -222,7 +222,7 @@ cvtDec (DataD ctxt tc tvs ksig constrs derivs)
 
 cvtDec (NewtypeD ctxt tc tvs ksig constr derivs)
   = do  { (ctxt', tc', tvs') <- cvt_tycl_hdr ctxt tc tvs
-        ; ksig' <- cvtKind `traverse` ksig
+        ; ksig' <- (cvtKind [TvbHasBraces, TvbNoBraces]) `traverse` ksig
         ; con' <- cvtConstr constr
         ; derivs' <- cvtDerivs derivs
         ; let defn = HsDataDefn { dd_ext = noExt
@@ -414,9 +414,9 @@ cvtDec (TH.ImplicitParamBindD _ _)
 ----------------
 cvtTySynEqn :: Located RdrName -> TySynEqn -> CvtM (LTyFamInstEqn GhcPs)
 cvtTySynEqn tc (TySynEqn mb_bndrs lhs rhs)
-  = do  { mb_bndrs' <- traverse (mapM cvt_tv) mb_bndrs
-        ; lhs' <- mapM (wrap_apps <=< cvtType) lhs
-        ; rhs' <- cvtType rhs
+  = do  { mb_bndrs' <- traverse (mapM ((flip cvt_tv) TvbNoBraces)) mb_bndrs
+        ; lhs' <- mapM (wrap_apps <=< (cvtType [TvbNoBraces])) lhs
+        ; rhs' <- cvtType [TvbNoBraces] rhs
         ; returnL $ mkHsImplicitBndrs
                   $ FamEqn { feqn_ext    = noExt
                            , feqn_tycon  = tc
@@ -454,7 +454,7 @@ cvt_tycl_hdr :: TH.Cxt -> TH.Name -> [TH.TyVarBndr]
 cvt_tycl_hdr cxt tc tvs
   = do { cxt' <- cvtContext cxt
        ; tc'  <- tconNameL tc
-       ; tvs' <- cvtTvs tvs
+       ; tvs' <- cvtTvs tvs [TvbNoBraces]
        ; return (cxt', tc', tvs')
        }
 
@@ -466,8 +466,8 @@ cvt_tyinst_hdr :: TH.Cxt -> TH.Name -> Maybe [TH.TyVarBndr] -> [TH.Type]
 cvt_tyinst_hdr cxt tc bndrs tys
   = do { cxt'   <- cvtContext cxt
        ; tc'    <- tconNameL tc
-       ; bndrs' <- traverse (mapM cvt_tv) bndrs
-       ; tys'   <- mapM (wrap_apps <=< cvtType) tys
+       ; bndrs' <- traverse (mapM ((flip cvt_tv) TvbNoBraces)) bndrs
+       ; tys'   <- mapM (wrap_apps <=< (cvtType [TvbNoBraces])) tys
        ; return (cxt', tc', bndrs', tys') }
 
 ----------------
@@ -545,7 +545,7 @@ cvtConstr (InfixC st1 c st2)
         ; returnL $ mkConDeclH98 c' Nothing Nothing (InfixCon st1' st2') }
 
 cvtConstr (ForallC tvs ctxt con)
-  = do  { tvs'      <- cvtTvs tvs
+  = do  { tvs'      <- cvtTvs tvs [TvbHasBraces, TvbNoBraces]
         ; ctxt'     <- cvtContext ctxt
         ; (dL->L _ con')  <- cvtConstr con
         ; returnL $ add_forall tvs' ctxt' con' }
@@ -573,13 +573,13 @@ cvtConstr (ForallC tvs ctxt con)
 cvtConstr (GadtC c strtys ty)
   = do  { c'      <- mapM cNameL c
         ; args    <- mapM cvt_arg strtys
-        ; (dL->L _ ty') <- cvtType ty
+        ; (dL->L _ ty') <- cvtType [TvbNoBraces] ty
         ; c_ty    <- mk_arr_apps args ty'
         ; returnL $ fst $ mkGadtDecl c' c_ty}
 
 cvtConstr (RecGadtC c varstrtys ty)
   = do  { c'       <- mapM cNameL c
-        ; ty'      <- cvtType ty
+        ; ty'      <- cvtType [TvbNoBraces] ty
         ; rec_flds <- mapM cvt_id_arg varstrtys
         ; let rec_ty = noLoc (HsFunTy noExt
                                            (noLoc $ HsRecTy noExt rec_flds) ty')
@@ -597,7 +597,7 @@ cvtSrcStrictness SourceStrict       = SrcStrict
 
 cvt_arg :: (TH.Bang, TH.Type) -> CvtM (LHsType GhcPs)
 cvt_arg (Bang su ss, ty)
-  = do { ty'' <- cvtType ty
+  = do { ty'' <- cvtType [TvbNoBraces] ty
        ; ty' <- wrap_apps ty''
        ; let su' = cvtSrcUnpackedness su
        ; let ss' = cvtSrcStrictness ss
@@ -647,7 +647,7 @@ cvtForD (ImportF callconv safety from nm ty)
   where
     mk_imp impspec
       = do { nm' <- vNameL nm
-           ; ty' <- cvtType ty
+           ; ty' <- cvtType [TvbNoBraces] ty
            ; return (ForeignImport { fd_i_ext = noExt
                                    , fd_name = nm'
                                    , fd_sig_ty = mkLHsSigType ty'
@@ -660,7 +660,7 @@ cvtForD (ImportF callconv safety from nm ty)
 
 cvtForD (ExportF callconv as nm ty)
   = do  { nm' <- vNameL nm
-        ; ty' <- cvtType ty
+        ; ty' <- cvtType [TvbNoBraces] ty
         ; let e = CExport (noLoc (CExportStatic (SourceText as)
                                                 (mkFastString as)
                                                 (cvt_conv callconv)))
@@ -697,7 +697,7 @@ cvtPragmaD (InlineP nm inline rm phases)
 
 cvtPragmaD (SpecialiseP nm ty inline phases)
   = do { nm' <- vNameL nm
-       ; ty' <- cvtType ty
+       ; ty' <- cvtType [TvbNoBraces] ty
        ; let src TH.NoInline  = "{-# SPECIALISE NOINLINE"
              src TH.Inline    = "{-# SPECIALISE INLINE"
              src TH.Inlinable = "{-# SPECIALISE INLINE"
@@ -714,14 +714,14 @@ cvtPragmaD (SpecialiseP nm ty inline phases)
        ; returnJustL $ Hs.SigD noExt $ SpecSig noExt nm' [mkLHsSigType ty'] ip }
 
 cvtPragmaD (SpecialiseInstP ty)
-  = do { ty' <- cvtType ty
+  = do { ty' <- cvtType [TvbNoBraces] ty
        ; returnJustL $ Hs.SigD noExt $
          SpecInstSig noExt (SourceText "{-# SPECIALISE") (mkLHsSigType ty') }
 
 cvtPragmaD (RuleP nm ty_bndrs tm_bndrs lhs rhs phases)
   = do { let nm' = mkFastString nm
        ; let act = cvtPhases phases AlwaysActive
-       ; ty_bndrs' <- traverse (mapM cvt_tv) ty_bndrs
+       ; ty_bndrs' <- traverse (mapM (flip cvt_tv TvbNoBraces)) ty_bndrs
        ; tm_bndrs' <- mapM cvtRuleBndr tm_bndrs
        ; lhs'   <- cvtl lhs
        ; rhs'   <- cvtl rhs
@@ -787,7 +787,7 @@ cvtRuleBndr (RuleVar n)
        ; return $ noLoc $ Hs.RuleBndr noExt n' }
 cvtRuleBndr (TypedRuleVar n ty)
   = do { n'  <- vNameL n
-       ; ty' <- cvtType ty
+       ; ty' <- cvtType [TvbNoBraces] ty
        ; return $ noLoc $ Hs.RuleBndrSig noExt n' $ mkLHsSigWcType ty' }
 
 ---------------------------------------------------
@@ -855,7 +855,7 @@ cvtl e = wrapL (cvt e)
                                    ; return $ HsApp noExt (mkLHsPar x')
                                                           (mkLHsPar y')}
     cvt (AppTypeE e t) = do { e' <- cvtl e
-                            ; t' <- cvtType t
+                            ; t' <- cvtType [TvbNoBraces] t
                             ; tp <- wrap_apps t'
                             ; let tp' = parenthesizeHsType appPrec tp
                             ; return $ HsAppType noExt e' (mkHsWildCardBndrs tp') }
@@ -944,7 +944,7 @@ cvtl e = wrapL (cvt e)
                               ; cvtOpApp x'' s y } --  Note [Converting UInfix]
 
     cvt (ParensE e)      = do { e' <- cvtl e; return $ HsPar noExt e' }
-    cvt (SigE e t)       = do { e' <- cvtl e; t' <- cvtType t
+    cvt (SigE e t)       = do { e' <- cvtl e; t' <- cvtType [TvbNoBraces] t
                               ; let pe = parenthesizeHsExpr sigPrec e'
                               ; return $ ExprWithTySig noExt pe (mkLHsSigWcType t') }
     cvt (RecConE c flds) = do { c' <- cNameL c
@@ -1223,7 +1223,7 @@ cvtp (RecP c fs)       = do { c' <- cNameL c; fs' <- mapM cvtPatFld fs
 cvtp (ListP ps)        = do { ps' <- cvtPats ps
                             ; return
                                    $ ListPat noExt ps'}
-cvtp (SigP p t)        = do { p' <- cvtPat p; t' <- cvtType t
+cvtp (SigP p t)        = do { p' <- cvtPat p; t' <- cvtType [TvbNoBraces] t
                             ; return $ SigPat noExt p' (mkLHsSigWcType t') }
 cvtp (ViewP e p)       = do { e' <- cvtl e; p' <- cvtPat p
                             ; return $ ViewPat noExt e' p'}
@@ -1254,17 +1254,19 @@ cvtOpAppP x op y
 -----------------------------------------------------------
 --      Types and type variables
 
-cvtTvs :: [TH.TyVarBndr] -> CvtM (LHsQTyVars GhcPs)
-cvtTvs tvs = do { tvs' <- mapM cvt_tv tvs; return (mkHsQTvs tvs') }
+cvtTvs :: [TH.TyVarBndr] -> [TvbBraces] -> CvtM (LHsQTyVars GhcPs)
+cvtTvs tvs bracesList = do { tvs' <- mapM (uncurry cvt_tv) (zip tvs bracesList)
+                           ; return (mkHsQTvs tvs')
+                           }
 
-cvt_tv :: TH.TyVarBndr -> CvtM (LHsTyVarBndr GhcPs)
-cvt_tv (TH.PlainTV nm)
+cvt_tv :: TH.TyVarBndr -> TvbBraces -> CvtM (LHsTyVarBndr GhcPs)
+cvt_tv (TH.PlainTV nm) braces
   = do { nm' <- tNameL nm
-       ; returnL $ UserTyVar noExt nm' }
-cvt_tv (TH.KindedTV nm ki)
+       ; returnL $ UserTyVar noExt nm' braces}
+cvt_tv (TH.KindedTV nm ki) braces
   = do { nm' <- tNameL nm
-       ; ki' <- cvtKind ki
-       ; returnL $ KindedTyVar noExt nm' ki' }
+       ; ki' <- cvtKind [braces] ki
+       ; returnL $ KindedTyVar noExt nm' ki' braces}
 
 cvtRole :: TH.Role -> Maybe Coercion.Role
 cvtRole TH.NominalR          = Just Coercion.Nominal
@@ -1276,7 +1278,7 @@ cvtContext :: TH.Cxt -> CvtM (LHsContext GhcPs)
 cvtContext tys = do { preds' <- mapM cvtPred tys; returnL preds' }
 
 cvtPred :: TH.Pred -> CvtM (LHsType GhcPs)
-cvtPred = cvtType
+cvtPred = cvtType (repeat [TvbNoBraces])
 
 cvtDerivClause :: TH.DerivClause
                -> CvtM (LHsDerivingClause GhcPs)
@@ -1290,14 +1292,14 @@ cvtDerivStrategy TH.StockStrategy    = returnL Hs.StockStrategy
 cvtDerivStrategy TH.AnyclassStrategy = returnL Hs.AnyclassStrategy
 cvtDerivStrategy TH.NewtypeStrategy  = returnL Hs.NewtypeStrategy
 cvtDerivStrategy (TH.ViaStrategy ty) = do
-  ty' <- cvtType ty
+  ty' <- cvtType (repeat [TvbNoBraces]) ty
   returnL $ Hs.ViaStrategy (mkLHsSigType ty')
 
-cvtType :: TH.Type -> CvtM (LHsType GhcPs)
+cvtType :: [TvbBraces] -> TH.Type -> CvtM (LHsType GhcPs)
 cvtType = cvtTypeKind "type"
 
-cvtTypeKind :: String -> TH.Type -> CvtM (LHsType GhcPs)
-cvtTypeKind ty_str ty
+cvtTypeKind :: String -> [TvbBraces] -> TH.Type -> CvtM (LHsType GhcPs)
+cvtTypeKind ty_str bracesList ty
   = do { (head_ty, tys') <- split_ty_app ty
        ; case head_ty of
            TupleT n
@@ -1361,10 +1363,10 @@ cvtTypeKind ty_str ty
 
            ForallT tvs cxt ty
              | null tys'
-             -> do { tvs' <- cvtTvs tvs
+             -> do { tvs' <- cvtTvs tvs bracesList
                    ; cxt' <- cvtContext cxt
                    ; let pcxt = parenthesizeHsContext funPrec cxt'
-                   ; ty'  <- cvtType ty
+                   ; ty'  <- cvtType bracesList ty
                    ; loc <- getL
                    ; let hs_ty  = mkHsForAllTy tvs loc tvs' rho_ty
                          rho_ty = mkHsQualTy cxt loc pcxt ty'
@@ -1372,8 +1374,8 @@ cvtTypeKind ty_str ty
                    ; return hs_ty }
 
            SigT ty ki
-             -> do { ty' <- cvtType ty
-                   ; ki' <- cvtKind ki
+             -> do { ty' <- cvtType bracesList ty
+                   ; ki' <- cvtKind bracesList ki
                    ; mk_apps (HsKindSig noExt ty' ki') tys'
                    }
 
@@ -1385,20 +1387,20 @@ cvtTypeKind ty_str ty
 
            InfixT t1 s t2
              -> do { s'  <- tconName s
-                   ; t1' <- cvtType t1
-                   ; t2' <- cvtType t2
+                   ; t1' <- cvtType (repeat [TvbNoBraces]) t1
+                   ; t2' <- cvtType (repeat [TvbNoBraces]) t2
                    ; mk_apps (HsTyVar noExt NotPromoted (noLoc s'))
                              (t1' : t2' : tys')
                    }
 
            UInfixT t1 s t2
-             -> do { t2' <- cvtType t2
-                   ; t <- cvtOpAppT t1 s t2' -- Note [Converting UInfix]
+             -> do { t2' <- cvtType (repeat [TvbNoBraces]) t2
+                   ; t <- cvtOpAppT (repeat [TvbNoBraces]) t1 s t2' -- Note [Converting UInfix]
                    ; mk_apps (unLoc t) tys'
                    }
 
            ParensT t
-             -> do { t' <- cvtType t
+             -> do { t' <- cvtType (repeat [TvbNoBraces]) t
                    ; mk_apps (HsParTy noExt t') tys'
                    }
 
@@ -1454,7 +1456,7 @@ cvtTypeKind ty_str ty
                             (noLoc eqTyCon_RDR)) tys'
            ImplicitParamT n t
              -> do { n' <- wrapL $ ipName n
-                   ; t' <- cvtType t
+                   ; t' <- cvtType bracesList t
                    ; returnL (HsIParamTy noExt n' t')
                    }
 
@@ -1511,7 +1513,7 @@ mk_arr_apps tys return_ty = foldrM go return_ty tys >>= returnL
 split_ty_app :: TH.Type -> CvtM (TH.Type, [LHsType GhcPs])
 split_ty_app ty = go ty []
   where
-    go (AppT f a) as' = do { a' <- cvtType a; go f (a':as') }
+    go (AppT f a) as' = do { a' <- cvtType (repeat [TvbNoBraces]) a ; go f (a':as') }
     go f as           = return (f,as)
 
 cvtTyLit :: TH.TyLit -> HsTyLit
@@ -1524,17 +1526,17 @@ provided @y@ is.
 
 See the @cvtOpApp@ documentation for how this function works.
 -}
-cvtOpAppT :: TH.Type -> TH.Name -> LHsType GhcPs -> CvtM (LHsType GhcPs)
-cvtOpAppT (UInfixT x op2 y) op1 z
-  = do { l <- cvtOpAppT y op1 z
-       ; cvtOpAppT x op2 l }
-cvtOpAppT x op y
+cvtOpAppT :: [TvbBraces] ->  TH.Type -> TH.Name -> LHsType GhcPs -> CvtM (LHsType GhcPs)
+cvtOpAppT bracesList (UInfixT x op2 y) op1 z
+  = do { l <- cvtOpAppT bracesList y op1 z
+       ; cvtOpAppT bracesList x op2 l}
+cvtOpAppT bracesList x op y
   = do { op' <- tconNameL op
-       ; x' <- cvtType x
+       ; x' <- cvtType bracesList x
        ; returnL (mkHsOpTy x' op' y) }
 
-cvtKind :: TH.Kind -> CvtM (LHsKind GhcPs)
-cvtKind = cvtTypeKind "kind"
+cvtKind :: [TvbBraces] -> TH.Kind -> CvtM (LHsKind GhcPs)
+cvtKind bracesList = cvtTypeKind "kind" bracesList
 
 -- | Convert Maybe Kind to a type family result signature. Used with data
 -- families where naming of the result is not possible (thus only kind or no
@@ -1542,16 +1544,16 @@ cvtKind = cvtTypeKind "kind"
 cvtMaybeKindToFamilyResultSig :: Maybe TH.Kind
                               -> CvtM (LFamilyResultSig GhcPs)
 cvtMaybeKindToFamilyResultSig Nothing   = returnL (Hs.NoSig noExt)
-cvtMaybeKindToFamilyResultSig (Just ki) = do { ki' <- cvtKind ki
-                                             ; returnL (Hs.KindSig noExt ki') }
+cvtMaybeKindToFamilyResultSig (Just ki) = do { ki' <- cvtKind (repeat [TvbNoBraces]) ki
+                                              ; returnL (Hs.KindSig noExt ki') }
 
 -- | Convert type family result signature. Used with both open and closed type
 -- families.
 cvtFamilyResultSig :: TH.FamilyResultSig -> CvtM (Hs.LFamilyResultSig GhcPs)
 cvtFamilyResultSig TH.NoSig           = returnL (Hs.NoSig noExt)
-cvtFamilyResultSig (TH.KindSig ki)    = do { ki' <- cvtKind ki
+cvtFamilyResultSig (TH.KindSig ki)    = do { ki' <- cvtKind (repeat [TvbNoBraces]) ki
                                            ; returnL (Hs.KindSig noExt  ki') }
-cvtFamilyResultSig (TH.TyVarSig bndr) = do { tv <- cvt_tv bndr
+cvtFamilyResultSig (TH.TyVarSig bndr) = do { tv <- cvt_tv bndr TvbNoBraces
                                            ; returnL (Hs.TyVarSig noExt tv) }
 
 -- | Convert injectivity annotation of a type family.
@@ -1562,20 +1564,20 @@ cvtInjectivityAnnotation (TH.InjectivityAnn annLHS annRHS)
        ; annRHS' <- mapM tNameL annRHS
        ; returnL (Hs.InjectivityAnn annLHS' annRHS') }
 
-cvtPatSynSigTy :: TH.Type -> CvtM (LHsType GhcPs)
+cvtPatSynSigTy :: TH.Type -> [TvbBraces] -> CvtM (LHsType GhcPs)
 -- pattern synonym types are of peculiar shapes, which is why we treat
 -- them separately from regular types;
 -- see Note [Pattern synonym type signatures and Template Haskell]
-cvtPatSynSigTy (ForallT univs reqs (ForallT exis provs ty))
-  | null exis, null provs = cvtType (ForallT univs reqs ty)
+cvtPatSynSigTy (ForallT univs reqs (ForallT exis provs ty)) bracesList
+  | null exis, null provs = cvtType bracesList (ForallT univs reqs ty)
   | null univs, null reqs = do { l   <- getL
-                               ; ty' <- cvtType (ForallT exis provs ty)
+                               ; ty' <- cvtType bracesList (ForallT exis provs ty)
                                ; return $ cL l (HsQualTy { hst_ctxt = cL l []
                                                          , hst_xqual = noExt
                                                          , hst_body = ty' }) }
   | null reqs             = do { l      <- getL
-                               ; univs' <- hsQTvExplicit <$> cvtTvs univs
-                               ; ty'    <- cvtType (ForallT exis provs ty)
+                               ; univs' <- hsQTvExplicit <$> cvtTvs univs bracesList
+                               ; ty'    <- cvtType bracesList (ForallT exis provs ty)
                                ; let forTy = HsForAllTy
                                               { hst_bndrs = univs'
                                               , hst_xforall = noExt
@@ -1584,8 +1586,8 @@ cvtPatSynSigTy (ForallT univs reqs (ForallT exis provs ty))
                                                       , hst_xqual = noExt
                                                       , hst_body = ty' }
                                ; return $ cL l forTy }
-  | otherwise             = cvtType (ForallT univs reqs (ForallT exis provs ty))
-cvtPatSynSigTy ty         = cvtType ty
+  | otherwise             = cvtType bracesList (ForallT univs reqs (ForallT exis provs ty))
+cvtPatSynSigTy ty bracesList = cvtType bracesList ty
 
 -----------------------------------------------------------
 cvtFixity :: TH.Fixity -> Hs.Fixity

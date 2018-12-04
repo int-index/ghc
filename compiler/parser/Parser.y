@@ -1668,13 +1668,13 @@ rule_explicit_activation :: { ([AddAnn]
                                   ,NeverActive) }
 
 rule_foralls :: { ([AddAnn], Maybe [LHsTyVarBndr GhcPs], [LRuleBndr GhcPs]) }
-        : 'forall' rule_vars '.' 'forall' rule_vars '.'    {% let tyvs = mkRuleTyVarBndrs $2
+        : 'forall' rule_vars '.' 'forall' rule_vars '.'    {% let tyvs = mkRuleTyVarBndrs TvbNoBraces $2
                                                               in hintExplicitForall (getLoc $1)
-                                                              >> checkRuleTyVarBndrNames (mkRuleTyVarBndrs $2)
+                                                              >> checkRuleTyVarBndrNames (mkRuleTyVarBndrs TvbNoBraces $2)
                                                               >> return ([mu AnnForall $1,mj AnnDot $3,
                                                                           mu AnnForall $4,mj AnnDot $6],
-                                                                         Just (mkRuleTyVarBndrs $2), mkRuleBndrs $5) }
-        | 'forall' rule_vars '.'                           { ([mu AnnForall $1,mj AnnDot $3],
+                                                                         Just (mkRuleTyVarBndrs TvbNoBraces $2), mkRuleBndrs $5) }
+        | 'forall' rule_vars '.'                           { ([mu AnnForall $1, mj AnnDot $3],
                                                               Nothing, mkRuleBndrs $2) }
         | {- empty -}                                      { ([], Nothing, []) }
 

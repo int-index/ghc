@@ -2277,7 +2277,7 @@ getGhciStepIO = do
         ioM     = nlHsAppTy (nlHsTyVar ioTyConName) (nlHsTyVar a_tv)
 
         step_ty = noLoc $ HsForAllTy
-                     { hst_bndrs = [noLoc $ UserTyVar noExt (noLoc a_tv)]
+                     { hst_bndrs = [noLoc $ UserTyVar noExt (noLoc a_tv) TvbNoBraces]
                      , hst_xforall = noExt
                      , hst_body  = nlHsFunTy ghciM ioM }
 
