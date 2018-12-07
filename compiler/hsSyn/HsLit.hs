@@ -28,6 +28,7 @@ import Outputable
 import FastString
 import HsExtension
 
+import Data.Void
 import Data.ByteString (ByteString)
 import Data.Data hiding ( Fixity )
 
@@ -129,7 +130,7 @@ type instance XOverLit GhcPs = NoExt
 type instance XOverLit GhcRn = Bool            -- Note [ol_rebindable]
 type instance XOverLit GhcTc = OverLitTc
 
-type instance XXOverLit (GhcPass _) = NoExt
+type instance XXOverLit (GhcPass _) = Void
 
 -- Note [Literal source text] in BasicTypes for SourceText fields in
 -- the following

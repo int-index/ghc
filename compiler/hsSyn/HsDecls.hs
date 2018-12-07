@@ -1918,6 +1918,7 @@ data DerivStrategy pass
   | ViaStrategy (XViaStrategy pass)
                      -- ^ @-XDerivingVia@
 
+type instance XViaStrategy GhcPrePs = LHsSigType GhcPs
 type instance XViaStrategy GhcPs = LHsSigType GhcPs
 type instance XViaStrategy GhcRn = LHsSigType GhcRn
 type instance XViaStrategy GhcTc = Type

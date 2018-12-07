@@ -48,6 +48,7 @@ import Type
 import Data.Data hiding (Fixity(..))
 import qualified Data.Data as Data (Fixity(..))
 import Data.Maybe (isNothing)
+import Data.Void
 
 import GHCi.RemoteTypes ( ForeignRef )
 import qualified Language.Haskell.TH as TH (Q)
@@ -797,7 +798,22 @@ type instance XEAsPat        (GhcPass _) = NoExt
 type instance XEViewPat      (GhcPass _) = NoExt
 type instance XELazyPat      (GhcPass _) = NoExt
 type instance XWrap          (GhcPass _) = NoExt
-type instance XXExpr         (GhcPass _) = NoExt
+
+data PreCmdPat
+  = PreWildPat
+  | PreAsPat (Located (IdP GhcPrePs)) (LHsExpr GhcPrePs)
+  | PreViewPat (LHsExpr GhcPrePs) (LHsExpr GhcPrePs)
+  | PreLazyPat (LHsExpr GhcPrePs)
+  | PreArrApp (LHsExpr GhcPrePs) (LHsExpr GhcPrePs) HsArrAppType Bool
+  | PreArrForm (LHsExpr GhcPrePs) [LHsCmdTop GhcPs]
+  | PreTySig (LHsExpr GhcPrePs) (LHsSigWcType GhcPs)
+  | PreTyApp (LHsExpr GhcPrePs) (LHsWcType GhcPs)
+  | PreBracket (HsBracket GhcPs)
+
+type instance XXExpr GhcPrePs = PreCmdPat
+type instance XXExpr GhcPs = Void
+type instance XXExpr GhcRn = Void
+type instance XXExpr GhcTc = Void
 
 -- ---------------------------------------------------------------------
 
@@ -824,7 +840,7 @@ type instance XMissing         GhcPs = NoExt
 type instance XMissing         GhcRn = NoExt
 type instance XMissing         GhcTc = Type
 
-type instance XXTupArg         (GhcPass _) = NoExt
+type instance XXTupArg         (GhcPass _) = Void
 
 tupArgPresent :: LHsTupArg id -> Bool
 tupArgPresent (L _ (Present {})) = True
@@ -906,6 +922,17 @@ RenamedSource, so this allows a simple mapping to be used based on the location.
 instance (p ~ GhcPass pass, OutputableBndrId p) => Outputable (HsExpr p) where
     ppr expr = pprExpr expr
 
+instance Outputable PreCmdPat where
+  ppr PreWildPat = char '_'
+  ppr (PreAsPat (L _ v) e) = pprPrefixOcc v <> char '@' <> ppr e
+  ppr (PreViewPat e p) = ppr e <+> text "->" <+> ppr p
+  ppr (PreLazyPat e) = char '~' <> ppr e
+  ppr (PreArrApp arrow arg haat b) = ppr_arr_app arrow arg haat b
+  ppr (PreArrForm op cmds) = ppr_arr_form_no_fixity op cmds
+  ppr (PreTySig expr sig) = ppr_ty_sig expr sig
+  ppr (PreTyApp f t) = ppr f <+> char '@' <> ppr t
+  ppr (PreBracket b) = pprHsBracket b
+
 -----------------------
 -- pprExpr, pprLExpr, pprBinds call pprDeeper;
 -- the underscore versions do not
@@ -927,7 +954,9 @@ isQuietHsExpr (HsAppType {})    = True
 isQuietHsExpr (OpApp {})        = True
 isQuietHsExpr _ = False
 
-pprBinds :: (OutputableBndrId (GhcPass idL), OutputableBndrId (GhcPass idR))
+pprBinds :: ( OutputableBndrId (GhcPass idL)
+            , OutputableBndrId (GhcPass idR)
+            , Outputable (XXHsLocalBindsLR (GhcPass idL) (GhcPass idR)))
          => HsLocalBindsLR (GhcPass idL) (GhcPass idR) -> SDoc
 pprBinds b = pprDeeper (ppr b)
 
@@ -1082,9 +1111,7 @@ ppr_expr (RecordCon { rcon_con_name = con_id, rcon_flds = rbinds })
 ppr_expr (RecordUpd { rupd_expr = L _ aexp, rupd_flds = rbinds })
   = hang (ppr aexp) 2 (braces (fsep (punctuate comma (map ppr rbinds))))
 
-ppr_expr (ExprWithTySig _ expr sig)
-  = hang (nest 2 (ppr_lexpr expr) <+> dcolon)
-         4 (ppr sig)
+ppr_expr (ExprWithTySig _ expr sig) = ppr_ty_sig expr sig
 
 ppr_expr (ArithSeq _ _ info) = brackets (ppr info)
 
@@ -1138,24 +1165,49 @@ ppr_expr (HsTickPragma _ _ externalSrcLoc _ exp)
           ppr exp,
           text ")"]
 
-ppr_expr (HsArrApp _ arrow arg HsFirstOrderApp True)
-  = hsep [ppr_lexpr arrow, larrowt, ppr_lexpr arg]
-ppr_expr (HsArrApp _ arrow arg HsFirstOrderApp False)
-  = hsep [ppr_lexpr arg, arrowt, ppr_lexpr arrow]
-ppr_expr (HsArrApp _ arrow arg HsHigherOrderApp True)
-  = hsep [ppr_lexpr arrow, larrowtt, ppr_lexpr arg]
-ppr_expr (HsArrApp _ arrow arg HsHigherOrderApp False)
-  = hsep [ppr_lexpr arg, arrowtt, ppr_lexpr arrow]
+ppr_expr (HsArrApp _ arrow arg haat b) = ppr_arr_app arrow arg haat b
 
 ppr_expr (HsArrForm _ (L _ (HsVar _ (L _ v))) (Just _) [arg1, arg2])
   = sep [pprCmdArg (unLoc arg1), hsep [pprInfixOcc v, pprCmdArg (unLoc arg2)]]
 ppr_expr (HsArrForm _ (L _ (HsConLikeOut _ c)) (Just _) [arg1, arg2])
   = sep [pprCmdArg (unLoc arg1), hsep [pprInfixOcc (conLikeName c), pprCmdArg (unLoc arg2)]]
 ppr_expr (HsArrForm _ op _ args)
-  = hang (text "(|" <+> ppr_lexpr op)
-         4 (sep (map (pprCmdArg.unLoc) args) <+> text "|)")
+  = ppr_arr_form_no_fixity op args
 ppr_expr (HsRecFld _ f) = ppr f
 ppr_expr (XExpr x) = ppr x
+
+ppr_arr_app :: (OutputableBndrId (GhcPass p))
+            => LHsExpr (GhcPass p)
+            -> LHsExpr (GhcPass p)
+            -> HsArrAppType
+            -> Bool
+            -> SDoc
+ppr_arr_app arrow arg HsFirstOrderApp True
+  = hsep [ppr_lexpr arrow, larrowt, ppr_lexpr arg]
+ppr_arr_app arrow arg HsFirstOrderApp False
+  = hsep [ppr_lexpr arg, arrowt, ppr_lexpr arrow]
+ppr_arr_app arrow arg HsHigherOrderApp True
+  = hsep [ppr_lexpr arrow, larrowtt, ppr_lexpr arg]
+ppr_arr_app arrow arg HsHigherOrderApp False
+  = hsep [ppr_lexpr arg, arrowtt, ppr_lexpr arrow]
+
+ppr_arr_form_no_fixity :: ( OutputableBndrId (GhcPass p)
+                          , OutputableBndrId (GhcPass p') )
+                       => LHsExpr (GhcPass p)
+                       -> [LHsCmdTop (GhcPass p')]
+                       -> SDoc
+ppr_arr_form_no_fixity op args
+  = hang (text "(|" <+> ppr_lexpr op)
+         4 (sep (map (pprCmdArg.unLoc) args) <+> text "|)")
+
+ppr_ty_sig :: ( OutputableBndrId (GhcPass p)
+              , OutputableBndrId (GhcPass p') )
+           => LHsExpr (GhcPass p)
+           -> LHsSigWcType (GhcPass p')
+           -> SDoc
+ppr_ty_sig expr sig
+  = hang (nest 2 (ppr_lexpr expr) <+> dcolon)
+         4 (ppr sig)
 
 ppr_apps :: (OutputableBndrId (GhcPass p))
          => HsExpr (GhcPass p)
@@ -1586,11 +1638,12 @@ data MatchGroupTc
        , mg_res_ty  :: Type    -- Type of the result, tr
        } deriving Data
 
+type instance XMG         GhcPrePs b = NoExt
 type instance XMG         GhcPs b = NoExt
 type instance XMG         GhcRn b = NoExt
 type instance XMG         GhcTc b = MatchGroupTc
 
-type instance XXMatchGroup (GhcPass _) b = NoExt
+type instance XXMatchGroup (GhcPass _) b = Void
 
 -- | Located Match
 type LMatch id body = Located (Match id body)
@@ -1609,7 +1662,7 @@ data Match p body
   | XMatch (XXMatch p body)
 
 type instance XCMatch (GhcPass _) b = NoExt
-type instance XXMatch (GhcPass _) b = NoExt
+type instance XXMatch (GhcPass _) b = Void
 
 instance (idR ~ GhcPass pr, OutputableBndrId idR, Outputable body)
             => Outputable (Match idR body) where
@@ -1701,7 +1754,7 @@ data GRHSs p body
   | XGRHSs (XXGRHSs p body)
 
 type instance XCGRHSs (GhcPass _) b = NoExt
-type instance XXGRHSs (GhcPass _) b = NoExt
+type instance XXGRHSs (GhcPass _) b = Void
 
 -- | Located Guarded Right-Hand Side
 type LGRHS id body = Located (GRHS id body)
@@ -1713,7 +1766,7 @@ data GRHS p body = GRHS (XCGRHS p body)
                   | XGRHS (XXGRHS p body)
 
 type instance XCGRHS (GhcPass _) b = NoExt
-type instance XXGRHS (GhcPass _) b = NoExt
+type instance XXGRHS (GhcPass _) b = Void
 
 -- We know the list must have at least one @Match@ in it.
 
@@ -2223,12 +2276,14 @@ instance (Outputable (StmtLR idL idL (LHsExpr idL)),
 
 instance (idL ~ GhcPass pl,idR ~ GhcPass pr,
           OutputableBndrId idL, OutputableBndrId idR,
+          Outputable (XXHsLocalBindsLR idL idR),
           Outputable body)
          => Outputable (StmtLR idL idR body) where
     ppr stmt = pprStmt stmt
 
 pprStmt :: forall idL idR body . (OutputableBndrId (GhcPass idL),
                                   OutputableBndrId (GhcPass idR),
+                                  Outputable (XXHsLocalBindsLR (GhcPass idL) (GhcPass idR)),
                                   Outputable body)
         => (StmtLR (GhcPass idL) (GhcPass idR) body) -> SDoc
 pprStmt (LastStmt _ expr ret_stripped _)
@@ -2336,6 +2391,7 @@ pprDo MonadComp     stmts = brackets    $ pprComp stmts
 pprDo _             _     = panic "pprDo" -- PatGuard, ParStmtCxt
 
 ppr_do_stmts :: (OutputableBndrId (GhcPass idL), OutputableBndrId (GhcPass idR),
+                 Outputable (XXHsLocalBindsLR (GhcPass idL) (GhcPass idR)),
                  Outputable body)
              => [LStmtLR (GhcPass idL) (GhcPass idR) body] -> SDoc
 -- Print a bunch of do stmts
@@ -2887,6 +2943,7 @@ pprMatchInCtxt match  = hang (text "In" <+> pprMatchContext (m_ctxt match)
 
 pprStmtInCtxt :: (OutputableBndrId (GhcPass idL),
                   OutputableBndrId (GhcPass idR),
+                  Outputable (XXHsLocalBindsLR (GhcPass idL) (GhcPass idR)),
                   Outputable body)
               => HsStmtContext (IdP (GhcPass idL))
               -> StmtLR (GhcPass idL) (GhcPass idR) body

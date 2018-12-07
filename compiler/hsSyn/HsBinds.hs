@@ -44,6 +44,7 @@ import DynFlags
 import Data.Data hiding ( Fixity )
 import Data.List hiding ( foldr )
 import Data.Ord
+import Data.Void
 
 {-
 ************************************************************************
@@ -96,7 +97,11 @@ data HsLocalBindsLR idL idR
 type instance XHsValBinds      (GhcPass pL) (GhcPass pR) = NoExt
 type instance XHsIPBinds       (GhcPass pL) (GhcPass pR) = NoExt
 type instance XEmptyLocalBinds (GhcPass pL) (GhcPass pR) = NoExt
-type instance XXHsLocalBindsLR (GhcPass pL) (GhcPass pR) = NoExt
+
+type instance XXHsLocalBindsLR (GhcPass pL) GhcPrePs = HsLocalBindsLR GhcPs GhcPs
+type instance XXHsLocalBindsLR (GhcPass pL) GhcPs = Void
+type instance XXHsLocalBindsLR (GhcPass pL) GhcRn = Void
+type instance XXHsLocalBindsLR (GhcPass pL) GhcTc = Void
 
 type LHsLocalBindsLR idL idR = Located (HsLocalBindsLR idL idR)
 
@@ -618,7 +623,8 @@ Specifically,
 -}
 
 instance (idL ~ GhcPass pl, idR ~ GhcPass pr,
-          OutputableBndrId idL, OutputableBndrId idR)
+          OutputableBndrId idL, OutputableBndrId idR,
+          Outputable (XXHsLocalBindsLR idL idR))
         => Outputable (HsLocalBindsLR idL idR) where
   ppr (HsValBinds _ bs)   = ppr bs
   ppr (HsIPBinds _ bs)    = ppr bs
@@ -823,6 +829,7 @@ data HsIPBinds id
         --                 -- uses of the implicit parameters
   | XHsIPBinds (XXHsIPBinds id)
 
+type instance XIPBinds       GhcPrePs = Void
 type instance XIPBinds       GhcPs = NoExt
 type instance XIPBinds       GhcRn = NoExt
 type instance XIPBinds       GhcTc = TcEvBinds -- binds uses of the

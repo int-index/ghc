@@ -47,6 +47,7 @@ module   RdrHsSyn (
         checkBlockArguments,
         checkPrecP,           -- Int -> P Int
         checkContext,         -- HsType -> P HsContext
+        checkExpr,
         checkPattern,         -- HsExp -> P HsPat
         bang_RDR,
         checkPatterns,        -- SrcLoc -> [HsExp] -> P [HsPat]
@@ -114,6 +115,7 @@ import DynFlags ( WarningFlag(..) )
 import Control.Monad
 import Text.ParserCombinators.ReadP as ReadP
 import Data.Char
+import Data.Void
 
 import Data.Data       ( dataTypeOf, fromConstr, dataTypeConstrs )
 
@@ -1034,6 +1036,160 @@ checkNoDocs msg ty = go ty
                                   [ text "Unexpected haddock", quotes (ppr ds)
                                   , text "on", msg, quotes (ppr t) ]
     go _ = pure ()
+
+-- -------------------------------------------------------------------------
+-- Checking Expressions.
+
+checkExpr :: LHsExpr GhcPrePs -> P (LHsExpr GhcPs)
+checkExpr (dL->L l e) = cL l <$> case e of
+  HsVar _ v -> return $ HsVar noExt v
+  HsIPVar _ ipname -> return $ HsIPVar noExt ipname
+  HsOverLabel _ mb_fromLabel str -> return $ HsOverLabel noExt mb_fromLabel str
+  HsLit _ lit -> return $ HsLit noExt (convertLit lit)
+  HsOverLit _ lit -> return $ HsOverLit noExt (checkOverLit lit)
+  HsPar _ e -> do
+    e' <- checkExpr e
+    return $ HsPar noExt e'
+  ExplicitSum _ alt arity e -> do
+    e' <- checkExpr e
+    return $ ExplicitSum noExt alt arity e'
+  ExplicitTuple _ args boxity -> do
+    args' <- traverse checkExprTupArg args
+    return $ ExplicitTuple noExt args' boxity
+  ExplicitList _ _ xs -> do
+    xs' <- traverse checkExpr xs
+    return (ExplicitList noExt Nothing xs')
+  HsDo _ cxt (dL->L l' stmts) -> do
+    stmts' <- traverse checkExprStmt stmts
+    return $ HsDo noExt cxt (cL l' stmts')
+  ArithSeq _ _ a -> do
+    a' <- checkArithSeq a
+    return $ ArithSeq noExt Nothing a'
+  HsSpliceE _ splice -> do
+    splice' <- checkExprSplice splice
+    return $ HsSpliceE noExt splice'
+  RecordUpd _ expr flds -> do
+    expr' <- checkExpr expr
+    flds' <- (traverse.traverse) checkRecUpdField flds
+    return $ RecordUpd noExt expr' flds'
+  XExpr pcp -> case pcp of
+    PreWildPat -> return $ EWildPat noExt
+    PreAsPat v e -> do
+      e' <- checkExpr e
+      return $ EAsPat noExt v e'
+    PreViewPat p e -> EViewPat noExt <$> checkExpr p <*> checkExpr e
+    PreLazyPat p -> ELazyPat noExt <$> checkExpr p
+    PreArrApp f a haat b -> do
+      f' <- checkExpr f
+      a' <- checkExpr a
+      return $ HsArrApp noExt f' a'  haat b
+    PreArrForm op cmds -> do
+      op' <- checkExpr op
+      return $ HsArrForm noExt op' Nothing cmds
+    PreTySig e sig -> do
+      e' <- checkExpr e
+      return $ ExprWithTySig noExt e' sig
+    PreTyApp f t -> do
+      f' <- checkExpr f
+      return $ HsAppType noExt f' t
+    PreBracket b -> return $ HsBracket noExt b
+
+  -- Impossible cases. TODO (int-index): use 'Void' to rule them out.
+  HsUnboundVar{} -> panic "checkExpr HsUnboundVar: impossible"
+  HsConLikeOut{} -> panic "checkExpr HsConLikeOut: impossible"
+  HsRecFld{} -> panic "checkExpr HsRecFld: impossible"
+  HsBracket{} -> panic "checkExpr HsBracket: impossible"
+  HsRnBracketOut{} -> panic "checkExpr HsRnBracketOut: impossible"
+  HsTcBracketOut{} -> panic "checkExpr HsTcBracketOut: impossible"
+
+  _ -> panic "TODO (int-index): checkExpr"
+
+checkOverLit :: HsOverLit GhcPrePs -> HsOverLit GhcPs
+checkOverLit (OverLit _ val _) = OverLit noExt val noExpr
+checkOverLit (XOverLit x) = absurd x
+
+checkExprTupArg :: LHsTupArg GhcPrePs -> P (LHsTupArg GhcPs)
+checkExprTupArg (dL->L l a) = cL l <$> case a of
+  Present _ e -> do
+    e' <- checkExpr e
+    return $ Present noExt e'
+  Missing _ -> return $ Missing noExt
+  XTupArg x -> absurd x
+
+checkExprStmt :: LStmt GhcPrePs (LHsExpr GhcPrePs) -> P (LStmt GhcPs (LHsExpr GhcPs))
+checkExprStmt (dL->L l stmt) = cL l <$> case stmt of
+  -- Impossible cases. TODO (int-index): use 'Void' to rule them out.
+  ApplicativeStmt{} -> panic "checkExprStmt ApplicativeStmt: impossible"
+  XStmtLR{} -> panic "checkExprStmt XStmtLR: impossible"
+  --
+  _ -> panic "TODO (int-index): checkExprStmt"
+
+checkArithSeq :: ArithSeqInfo GhcPrePs -> P (ArithSeqInfo GhcPs)
+checkArithSeq a = case a of
+  From e1 -> From <$> checkExpr e1
+  FromThen e1 e2 -> FromThen <$> checkExpr e1 <*> checkExpr e2
+  FromTo e1 e2 -> FromTo <$> checkExpr e1 <*> checkExpr e2
+  FromThenTo e1 e2 e3 ->
+    FromThenTo <$> checkExpr e1 <*> checkExpr e2 <*> checkExpr e3
+
+checkExprSplice :: HsSplice GhcPrePs -> P (HsSplice GhcPs)
+checkExprSplice splice = case splice of
+  HsTypedSplice _ hasParen splice_name expr -> do
+    expr' <- checkExpr expr
+    return $ HsTypedSplice noExt hasParen splice_name expr'
+  HsUntypedSplice _ hasParen splice_name expr -> do
+    expr' <- checkExpr expr
+    return $ HsUntypedSplice noExt hasParen splice_name expr'
+  HsQuasiQuote _ splice_name quoter q_loc quote ->
+    return $ HsQuasiQuote noExt splice_name quoter q_loc quote
+  HsSpliced{} -> panic "checkExprSplice HsSpliced: impossible"
+  XSplice{} -> panic "checkExprSplice XSplice: impossible"
+
+checkRecUpdField :: HsRecUpdField GhcPrePs -> P (HsRecUpdField GhcPs)
+checkRecUpdField (HsRecField lbl arg pun) = do
+  lbl' <- traverse checkAmbiguousFieldOcc lbl
+  arg' <- checkExpr arg
+  return (HsRecField lbl' arg' pun)
+
+checkAmbiguousFieldOcc :: AmbiguousFieldOcc GhcPrePs -> P (AmbiguousFieldOcc GhcPs)
+checkAmbiguousFieldOcc fieldOcc =
+  case fieldOcc of
+    Unambiguous _ v -> return (Unambiguous noExt v)
+    Ambiguous x _ -> absurd x
+    XAmbiguousFieldOcc x -> absurd x
+
+checkExprMatchGroup :: MatchGroup GhcPrePs (LHsExpr GhcPrePs) -> P (MatchGroup GhcPs (LHsExpr GhcPs))
+checkExprMatchGroup (MG _ alts origin) = do
+  alts' <- (traverse.traverse.traverse) checkExprMatch alts
+  return $ MG noExt alts' origin
+checkExprMatchGroup (XMatchGroup x) = absurd x
+
+checkExprMatch :: Match GhcPrePs (LHsExpr GhcPrePs) -> P (Match GhcPs (LHsExpr GhcPs))
+checkExprMatch (Match _ ctxt pats grhss) = do
+  grhss' <- checkExprGRHSs grhss
+  pats' <- panic "TODO (int-index): What do I do with pats?"
+  return $ Match noExt ctxt pats' grhss'
+checkExprMatch (XMatch x) = absurd x
+
+checkExprGRHSs :: GRHSs GhcPrePs (LHsExpr GhcPrePs) -> P (GRHSs GhcPs (LHsExpr GhcPs))
+checkExprGRHSs (GRHSs _ grhss binds) = do
+  grhss' <- (traverse.traverse) checkExprGRHS grhss
+  binds' <- checkLocalBinds binds
+  return $ GRHSs noExt grhss' binds'
+
+checkExprGRHS :: GRHS GhcPrePs (LHsExpr GhcPrePs) -> P (GRHS GhcPs (LHsExpr GhcPs))
+checkExprGRHS (GRHS _ guards rhs) = do
+  guards' <- traverse checkExprStmt guards
+  rhs' <- checkExpr rhs
+  return $ GRHS noExt guards' rhs'
+checkExprGRHS (XGRHS x) = absurd x
+
+checkLocalBinds :: LHsLocalBinds GhcPrePs -> P (LHsLocalBinds GhcPs)
+checkLocalBinds (dL->L l binds) = cL l <$> case binds of
+  XHsLocalBindsLR x -> return x
+  HsValBinds{} -> panic "checkLocalBinds HsValBinds: impossible"
+  HsIPBinds{} -> panic "checkLocalBinds HsIPBinds: impossible"
+  EmptyLocalBinds{} -> panic "checkLocalBinds EmptyLocalBinds: impossible"
 
 -- -------------------------------------------------------------------------
 -- Checking Patterns.

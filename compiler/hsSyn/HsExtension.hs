@@ -69,10 +69,11 @@ data GhcPass (c :: Pass)
 deriving instance Eq (GhcPass c)
 deriving instance Typeable c => Data (GhcPass c)
 
-data Pass = Parsed | Renamed | Typechecked
+data Pass = PreParsed | Parsed | Renamed | Typechecked
          deriving (Data)
 
 -- Type synonyms as a shorthand for tagging
+type GhcPrePs = GhcPass 'PreParsed  -- the intermediate output of 'happy'
 type GhcPs   = GhcPass 'Parsed      -- Old 'RdrName' type param
 type GhcRn   = GhcPass 'Renamed     -- Old 'Name' type param
 type GhcTc   = GhcPass 'Typechecked -- Old 'Id' type para,
@@ -80,6 +81,7 @@ type GhcTcId = GhcTc                -- Old 'TcId' type param
 
 -- | Maps the "normal" id type for a given pass
 type family IdP p
+type instance IdP GhcPrePs = RdrName
 type instance IdP GhcPs = RdrName
 type instance IdP GhcRn = Name
 type instance IdP GhcTc = Id
@@ -1095,6 +1097,9 @@ type OutputableX p = -- See Note [OutputableX]
   ( Outputable (XIPBinds    p)
   , Outputable (XViaStrategy p)
   , Outputable (XViaStrategy GhcRn)
+  , Outputable (XXExpr p)
+  , Outputable (XXExpr GhcRn)
+  , Outputable (XXHsLocalBindsLR p p)
   )
 -- TODO: Should OutputableX be included in OutputableBndrId?
 

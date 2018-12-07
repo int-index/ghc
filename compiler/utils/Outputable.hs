@@ -124,6 +124,7 @@ import Text.Printf
 import Numeric (showFFloat)
 import Data.Graph (SCC(..))
 import Data.List (intersperse)
+import Data.Void
 
 import GHC.Fingerprint
 import GHC.Show         ( showMultiLineString )
@@ -811,6 +812,9 @@ instance Outputable Word where
 
 instance Outputable () where
     ppr _ = text "()"
+
+instance Outputable Void where
+    ppr = absurd
 
 instance (Outputable a) => Outputable [a] where
     ppr xs = brackets (fsep (punctuate comma (map ppr xs)))

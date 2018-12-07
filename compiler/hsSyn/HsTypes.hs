@@ -88,6 +88,7 @@ import SrcLoc
 import Outputable
 import FastString
 import Maybes( isJust )
+import Data.Void
 
 import Data.Data hiding ( Fixity, Prefix, Infix )
 
@@ -1214,15 +1215,17 @@ data AmbiguousFieldOcc pass
   | Ambiguous   (XAmbiguous pass)   (Located RdrName)
   | XAmbiguousFieldOcc (XXAmbiguousFieldOcc pass)
 
+type instance XUnambiguous GhcPrePs = NoExt
 type instance XUnambiguous GhcPs = NoExt
 type instance XUnambiguous GhcRn = Name
 type instance XUnambiguous GhcTc = Id
 
+type instance XAmbiguous GhcPrePs = Void
 type instance XAmbiguous GhcPs = NoExt
 type instance XAmbiguous GhcRn = NoExt
 type instance XAmbiguous GhcTc = Id
 
-type instance XXAmbiguousFieldOcc (GhcPass _) = NoExt
+type instance XXAmbiguousFieldOcc (GhcPass _) = Void
 
 instance p ~ GhcPass pass => Outputable (AmbiguousFieldOcc p) where
   ppr = ppr . rdrNameAmbiguousFieldOcc
