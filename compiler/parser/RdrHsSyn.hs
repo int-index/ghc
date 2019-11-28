@@ -67,6 +67,8 @@ module   RdrHsSyn (
         addFatalError, hintBangPat,
         TyEl(..), mergeOps, mergeDataCon,
         mkBangTy,
+        mkHsStarTy,
+        mkLHsFunTy,
 
         -- Help with processing exports
         ImpExpSubSpec(..),
@@ -98,6 +100,7 @@ module   RdrHsSyn (
         DisambECP(..),
         ecpFromExp,
         ecpFromCmd,
+        ecpFromType,
         PatBuilder,
 
     ) where
@@ -105,7 +108,7 @@ module   RdrHsSyn (
 import GhcPrelude
 import GHC.Hs           -- Lots of it
 import TyCon            ( TyCon, isTupleTyCon, tyConSingleDataCon_maybe )
-import DataCon          ( DataCon, dataConTyCon )
+import DataCon          ( DataCon, dataConTyCon, dataConName )
 import ConLike          ( ConLike(..) )
 import CoAxiom          ( Role, fsFromRole )
 import RdrName
@@ -115,6 +118,7 @@ import Lexer
 import Lexeme           ( isLexCon )
 import Type             ( TyThing(..), funTyCon )
 import TysWiredIn       ( cTupleTyConName, tupleTyCon, tupleDataCon,
+                          unitDataCon,
                           nilDataConName, nilDataConKey,
                           listTyConName, listTyConKey, eqTyCon_RDR,
                           tupleTyConName, cTupleTyConNameArity_maybe )
@@ -993,6 +997,12 @@ checkCmdBlockArguments :: LHsCmd GhcPs -> PV ()
            $$ text "You could write it with parentheses"
            $$ text "Or perhaps you meant to enable BlockArguments?"
 
+-- Notes for 'checkContext'
+-- We parse a context as a btype so that we don't get reduce/reduce
+-- errors in ctype.  The basic problem is that
+--      (Eq a, Ord a)
+-- looks so much like a tuple type.  We can't tell until we find the =>
+
 -- | Validate the context constraints and break up a context into a list
 -- of predicates.
 --
@@ -1002,14 +1012,13 @@ checkCmdBlockArguments :: LHsCmd GhcPs -> PV ()
 --     (Eq a)               -->  [Eq a]
 --     (((Eq a)))           -->  [Eq a]
 -- @
-checkContext :: LHsType GhcPs -> P ([AddAnn],LHsContext GhcPs)
-checkContext (L l orig_t)
-  = check [] (L l orig_t)
+checkContext :: LHsType GhcPs -> P (LHsContext GhcPs)
+checkContext (L l orig_t) = check [] (L l orig_t)
  where
   check anns (L lp (HsTupleTy _ HsBoxedOrConstraintTuple ts))
     -- (Eq a, Ord b) shows up as a tuple type. Only boxed tuples can
     -- be used as context constraints.
-    = return (anns ++ mkParensApiAnn lp,L l ts)                -- Ditto ()
+    = done (anns ++ mkParensApiAnn lp) (L l ts)                -- Ditto ()
 
   check anns (L lp1 (HsParTy _ ty))
                                   -- to be sure HsParTy doesn't get into the way
@@ -1018,9 +1027,15 @@ checkContext (L l orig_t)
                                    else (anns ++ mkParensApiAnn lp1)
 
   -- no need for anns, returning original
-  check _anns t = checkNoDocs msg t *> return ([],L l [L l orig_t])
+  check _anns t = checkNoDocs msg t *> done [] (L l [L l orig_t])
 
   msg = text "data constructor context"
+
+  done anns ctx = do
+    when (null (unLoc ctx)) $
+      addAnnotation (getLoc ctx) AnnUnit (getLoc ctx)
+    addAnnsAt (getLoc ctx) anns
+    return ctx
 
 -- | Check recursively if there are any 'HsDocTy's in the given type.
 -- This only works on a subset of types produced by 'btype_no_ops'
@@ -1711,6 +1726,9 @@ ecpFromExp a = ECP (ecpFromExp' a)
 ecpFromCmd :: LHsCmd GhcPs -> ECP
 ecpFromCmd a = ECP (ecpFromCmd' a)
 
+ecpFromType :: LHsType GhcPs -> ECP
+ecpFromType a = ECP (ecpFromType' a)
+
 -- | Disambiguate infix operators.
 -- See Note [Ambiguous syntactic categories]
 class DisambInfixOp b where
@@ -1739,6 +1757,8 @@ class b ~ (Body b) GhcPs => DisambECP b where
   ecpFromCmd' :: LHsCmd GhcPs -> PV (Located b)
   -- | Return an expression without ambiguity, or fail in a non-expression context.
   ecpFromExp' :: LHsExpr GhcPs -> PV (Located b)
+  -- | Return a type without ambiguity, or fail in a non-type context.
+  ecpFromType' :: LHsType GhcPs -> PV (Located b)
   -- | Disambiguate "\... -> ..." (lambda)
   mkHsLamPV :: SrcSpan -> MatchGroup GhcPs (Located b) -> PV (Located b)
   -- | Disambiguate "let ... in ..."
@@ -1759,6 +1779,8 @@ class b ~ (Body b) GhcPs => DisambECP b where
   superFunArg :: (DisambECP (FunArg b) => PV (Located b)) -> PV (Located b)
   -- | Disambiguate "f x" (function application)
   mkHsAppPV :: SrcSpan -> Located b -> Located (FunArg b) -> PV (Located b)
+  -- | Disambiguate "f @x" (type application)
+  mkHsTypeAppPV :: SrcSpan -> Located b -> SrcSpan -> LHsType GhcPs -> PV (Located b)
   -- | Disambiguate "if ... then ... else ..."
   mkHsIfPV :: SrcSpan
          -> LHsExpr GhcPs
@@ -1796,8 +1818,13 @@ class b ~ (Body b) GhcPs => DisambECP b where
   mkHsNegAppPV :: SrcSpan -> Located b -> PV (Located b)
   -- | Disambiguate "(# a)" (right operator section)
   mkHsSectionR_PV :: SrcSpan -> Located (InfixOp b) -> Located b -> PV (Located b)
-  -- | Disambiguate "(a -> b)" (view pattern)
-  mkHsViewPatPV :: SrcSpan -> LHsExpr GhcPs -> Located b -> PV (Located b)
+  -- | Arrow left-hand side representation
+  type ArrowLHS b
+  -- | Bring superclass constraints on ArrowLHS into scope.
+  -- See Note [UndecidableSuperClasses for associated types]
+  superArrowLHS :: (DisambECP (ArrowLHS b) => PV (Located b)) -> PV (Located b)
+  -- | Disambiguate "(a -> b)" (view pattern or arrow type)
+  mkHsArrowPV :: SrcSpan -> Located (ArrowLHS b) -> Located b -> PV (Located b)
   -- | Disambiguate "a@b" (as-pattern)
   mkHsAsPatPV :: SrcSpan -> Located RdrName -> Located b -> PV (Located b)
   -- | Disambiguate "~a" (lazy pattern)
@@ -1806,6 +1833,8 @@ class b ~ (Body b) GhcPs => DisambECP b where
   mkHsBangPatPV :: SrcSpan -> Located b -> PV (Located b)
   -- | Disambiguate tuple sections and unboxed sums
   mkSumOrTuplePV :: SrcSpan -> Boxity -> SumOrTuple b -> PV (Located b)
+  -- | Disambiguate 'x (Template Haskell name quotation or DataKinds namespace hint)
+  mkPrimeNamePV :: SrcSpan -> Located RdrName -> PV (Located b)
   -- | Validate infixexp LHS to reject unwanted {-# SCC ... #-} pragmas
   rejectPragmaPV :: Located b -> PV ()
 
@@ -1858,6 +1887,7 @@ instance DisambECP (HsCmd GhcPs) where
   type Body (HsCmd GhcPs) = HsCmd
   ecpFromCmd' = return
   ecpFromExp' (L l e) = cmdFail l (ppr e)
+  ecpFromType' (L l t) = cmdFail l (ppr t)
   mkHsLamPV l mg = return $ L l (HsCmdLam noExtField mg)
   mkHsLetPV l bs e = return $ L l (HsCmdLet noExtField bs e)
   type InfixOp (HsCmd GhcPs) = HsExpr GhcPs
@@ -1872,6 +1902,7 @@ instance DisambECP (HsCmd GhcPs) where
     checkCmdBlockArguments c
     checkExpBlockArguments e
     return $ L l (HsCmdApp noExtField c e)
+  mkHsTypeAppPV l c _ t = cmdFail l (ppr c <+> text "@" <> ppr t)
   mkHsIfPV l c semi1 a semi2 b = do
     checkDoAndIfThenElse c semi1 a semi2 b
     return $ L l (mkHsCmdIf c a b)
@@ -1892,7 +1923,9 @@ instance DisambECP (HsCmd GhcPs) where
     let pp_op = fromMaybe (panic "cannot print infix operator")
                           (ppr_infix_expr (unLoc op))
     in pp_op <> ppr c
-  mkHsViewPatPV l a b = cmdFail l $
+  type ArrowLHS (HsCmd GhcPs) = HsExpr GhcPs
+  superArrowLHS m = m
+  mkHsArrowPV l a b = cmdFail l $
     ppr a <+> text "->" <+> ppr b
   mkHsAsPatPV l v c = cmdFail l $
     pprPrefixOcc (unLoc v) <> text "@" <> ppr c
@@ -1901,6 +1934,7 @@ instance DisambECP (HsCmd GhcPs) where
   mkHsBangPatPV l c = cmdFail l $
     text "!" <> ppr c
   mkSumOrTuplePV l boxity a = cmdFail l (pprSumOrTuple boxity a)
+  mkPrimeNamePV l a = cmdFail l (text "\'" <+> ppr a)
   rejectPragmaPV _ = return ()
 
 cmdFail :: SrcSpan -> SDoc -> PV a
@@ -1913,6 +1947,11 @@ instance DisambECP (HsExpr GhcPs) where
     addError l $ vcat
       [ text "Arrow command found where an expression was expected:",
         nest 2 (ppr c) ]
+    return (L l hsHoleExpr)
+  ecpFromType' (L l t) = do
+    addError l $ vcat
+      [ text "Type found where an expression was expected:",
+        nest 2 (ppr t) ]
     return (L l hsHoleExpr)
   ecpFromExp' = return
   mkHsLamPV l mg = return $ L l (HsLam noExtField mg)
@@ -1928,6 +1967,9 @@ instance DisambECP (HsExpr GhcPs) where
     checkExpBlockArguments e1
     checkExpBlockArguments e2
     return $ L l (HsApp noExtField e1 e2)
+  mkHsTypeAppPV l e _ t = do
+    checkExpBlockArguments e
+    return $ L l (HsAppType noExtField e (mkHsWildCardBndrs t))
   mkHsIfPV l c semi1 a semi2 b = do
     checkDoAndIfThenElse c semi1 a semi2 b
     return $ L l (mkHsIf c a b)
@@ -1945,7 +1987,10 @@ instance DisambECP (HsExpr GhcPs) where
     checkRecordSyntax (L l r)
   mkHsNegAppPV l a = return $ L l (NegApp noExtField a noSyntaxExpr)
   mkHsSectionR_PV l op e = return $ L l (SectionR noExtField op e)
-  mkHsViewPatPV l a b = patSynErr "View pattern" l (ppr a <+> text "->" <+> ppr b) empty
+  type ArrowLHS (HsExpr GhcPs) = HsExpr GhcPs
+  superArrowLHS m = m
+  mkHsArrowPV l a b =
+    patSynErr "View pattern or function type" l (ppr a <+> text "->" <+> ppr b) empty
   mkHsAsPatPV l v e =
     patSynErr "@-pattern" l (pprPrefixOcc (unLoc v) <> text "@" <> ppr e) $
     text "Type application syntax requires a space before '@'"
@@ -1954,6 +1999,8 @@ instance DisambECP (HsExpr GhcPs) where
   mkHsBangPatPV l e = patSynErr "Bang pattern" l (text "!" <> ppr e) $
     text "Did you mean to add a space after the '!'?"
   mkSumOrTuplePV = mkSumOrTupleExpr
+  mkPrimeNamePV l a =
+    return $ L l $ HsBracket noExtField (VarBr noExtField True (unLoc a))
   rejectPragmaPV (L _ (OpApp _ _ _ e)) =
     -- assuming left-associative parsing of operators
     rejectPragmaPV e
@@ -1998,6 +2045,9 @@ instance DisambECP (PatBuilder GhcPs) where
   ecpFromExp' (L l e) =
     addFatalError l $
       text "Expression syntax in pattern:" <+> ppr e
+  ecpFromType' (L l t) =
+    addFatalError l $
+      text "Type syntax in pattern:" <+> ppr t
   mkHsLamPV l _ = addFatalError l $
     text "Lambda-syntax in pattern." $$
     text "Pattern matching on functions is not possible."
@@ -2009,6 +2059,9 @@ instance DisambECP (PatBuilder GhcPs) where
   type FunArg (PatBuilder GhcPs) = PatBuilder GhcPs
   superFunArg m = m
   mkHsAppPV l p1 p2 = return $ L l (PatBuilderApp p1 p2)
+  mkHsTypeAppPV l _ _ _ =
+    addFatalError l $
+    text "Type application in pattern"
   mkHsIfPV l _ _ _ _ _ = addFatalError l $ text "(if ... then ... else ...)-syntax in pattern"
   mkHsDoPV l _ = addFatalError l $ text "do-notation in pattern"
   mkHsParPV l p = return $ L l (PatBuilderPar p)
@@ -2034,7 +2087,9 @@ instance DisambECP (PatBuilder GhcPs) where
       _ -> patFail l (text "-" <> ppr p)
     return $ L l (PatBuilderPat (mkNPat lit (Just noSyntaxExpr)))
   mkHsSectionR_PV l op p = patFail l (pprInfixOcc (unLoc op) <> ppr p)
-  mkHsViewPatPV l a b = do
+  type ArrowLHS (PatBuilder GhcPs) = HsExpr GhcPs
+  superArrowLHS m = m
+  mkHsArrowPV l a b = do
     p <- checkLPat b
     return $ L l (PatBuilderPat (ViewPat noExtField a p))
   mkHsAsPatPV l v e = do
@@ -2049,6 +2104,7 @@ instance DisambECP (PatBuilder GhcPs) where
     hintBangPat l pb
     return $ L l (PatBuilderPat pb)
   mkSumOrTuplePV = mkSumOrTuplePat
+  mkPrimeNamePV l a = patFail l (text "\'" <+> ppr a)
   rejectPragmaPV _ = return ()
 
 checkUnboxedStringLitPat :: Located (HsLit GhcPs) -> PV ()
@@ -2068,6 +2124,89 @@ mkPatRec (unLoc -> PatBuilderVar c) (HsRecFields fs dd)
        return (PatBuilderPat (ConPatIn c (RecCon (HsRecFields fs dd))))
 mkPatRec p _ =
   addFatalError (getLoc p) $ text "Not a record constructor:" <+> ppr p
+
+instance p ~ GhcPs => DisambECP (HsType p) where
+  type Body (HsType p) = HsType
+  ecpFromCmd' (L l c) =
+    addFatalError l $
+      text "Command syntax in type:" <+> ppr c
+  ecpFromExp' (L l e) =
+    addFatalError l $
+      text "Expression syntax in type:" <+> ppr e
+  ecpFromType' = return
+  mkHsLamPV l _ = addFatalError l $
+    text "Type-level lambdas are not supported."
+  type InfixOp (HsType p) = RdrName
+  superInfixOp m = m
+  mkHsOpAppPV _ t1 op t2 =
+    return $ op_ty_rassoc (\t -> mkLHsOpTy t (mapLoc toTypeNameSpace op) t2) t1
+    where
+      -- The renamer expects HsOpTy to be right-associative, and the renamer
+      -- shall receive what it asks for, even if it means O(n^2)
+      -- TODO (int-index): rewrite the associativity logic in the type renamer
+      op_ty_rassoc :: (LHsType GhcPs -> LHsType GhcPs) -> (LHsType GhcPs -> LHsType GhcPs)
+      op_ty_rassoc f (L _ (HsOpTy _ t1' op' t2')) = mkLHsOpTy t1' op' (op_ty_rassoc f t2')
+      op_ty_rassoc f t = f t
+  mkHsCasePV l _ _ = addFatalError l $ text "(case ... of ...)-syntax in type"
+  type FunArg (HsType p) = HsType p
+  superFunArg m = m
+  mkHsAppPV l t1 t2 = return $ L l (HsAppTy noExtField t1 t2)
+  mkHsTypeAppPV l t l_at k = return $ L l (HsAppKindTy l_at t k)
+  mkHsIfPV l _ _ _ _ _ = addFatalError l $ text "(if ... then ... else ...)-syntax in type"
+  mkHsDoPV l _ = addFatalError l $ text "do-notation in type"
+  mkHsParPV l t = return $ L l (HsParTy noExtField t)
+  mkHsVarPV (L l (Exact name))
+    | name == dataConName unitDataCon =
+      return $ L l (HsTupleTy noExtField HsBoxedOrConstraintTuple [])
+  mkHsVarPV (L l v) = do
+    star_is_type <- getBit StarIsTypeBit
+    case v of
+      Unqual occ | star_is_type, occNameFS occ == fsLit "*" -> mkStar False
+      Unqual occ | star_is_type, occNameFS occ == fsLit "★" -> mkStar True
+      _ -> return $ L l (HsTyVar noExtField NotPromoted (L l (toTypeNameSpace v)))
+    where
+      mkStar isUni = do
+        t <- mkHsStarTy l isUni
+        return (L l (HsParTy noExtField t))
+  mkHsLitPV (L l lit) =
+    case lit of
+      HsString _ s -> return $ L l (HsTyLit noExtField (HsStrTy NoSourceText s))
+      _ -> addFatalError l $ hang (text "Unsupported literal in type:") 2 (ppr lit)
+  mkHsOverLitPV (L l lit) =
+    case lit of
+      OverLit { ol_val = HsIntegral (IL { il_neg = False, il_value = n }) } ->
+        return $ L l (HsTyLit noExtField (HsNumTy NoSourceText n))
+      _ -> addFatalError l $ hang (text "Unsupported literal in type:") 2 (ppr lit)
+  mkHsWildCardPV l = return $ L l mkAnonWildCardTy
+  mkHsTySigPV l t sig = return $ L l (HsKindSig noExtField t sig)
+  mkHsExplicitListPV l [t] = return $ L l (HsListTy noExtField t)
+  mkHsExplicitListPV l ts = return $ L l (HsExplicitListTy noExtField NotPromoted ts)
+  -- ...
+  -- ...
+  -- ...
+  type ArrowLHS (HsType p) = HsType p
+  superArrowLHS m = m
+  mkHsArrowPV l t1 t2 = return $ L l (HsFunTy noExtField t1 t2)
+  -- ...
+  -- ...
+  -- ...
+  mkSumOrTuplePV = mkSumOrTupleType
+  mkPrimeNamePV l a = return $ L l (HsTyVar noExtField IsPromoted a)
+
+mkHsStarTy :: MonadP m => SrcSpan -> Bool -> m (LHsType GhcPs)
+mkHsStarTy l u = do
+  warnStarIsType l
+  return $ L l (HsStarTy noExtField u)
+
+toTypeNameSpace :: RdrName -> RdrName
+toTypeNameSpace (Unqual occ) | occNameFS occ == fsLit "~" =
+  eqTyCon_RDR -- See Note [eqTyCon (~) is built-in syntax]
+toTypeNameSpace v = setRdrNameSpace v ns
+  where
+    ns | isSymOcc (occName v) = tcClsName
+       | isVarNameSpace (rdrNameSpace v) = tvName
+       | isDataConNameSpace (rdrNameSpace v) = tcClsName
+       | otherwise = rdrNameSpace v
 
 {- Note [Ambiguous syntactic categories]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2806,7 +2945,7 @@ failOpImportQualifiedTwice loc = addError loc msg
   where
     msg = text "Multiple occurrences of 'qualified'"
 
-warnStarIsType :: SrcSpan -> P ()
+warnStarIsType :: MonadP m => SrcSpan -> m ()
 warnStarIsType span = addWarning Opt_WarnStarIsType span msg
   where
     msg =  text "Using" <+> quotes (text "*")
@@ -3066,6 +3205,27 @@ mkSumOrTuplePat l Unboxed (Sum alt arity p) = do
 mkSumOrTuplePat l Boxed a@Sum{} =
     addFatalError l (hang (text "Boxed sums not supported:") 2
                       (pprSumOrTuple Boxed a))
+
+mkSumOrTupleType :: SrcSpan -> Boxity -> SumOrTuple (HsType GhcPs) -> PV (LHsType GhcPs)
+
+-- Tuple
+mkSumOrTupleType l boxity (Tuple ts) = do
+    ts' <- traverse unwrap_mty ts
+    return $ L l (HsTupleTy noExtField tup_sort ts')
+  where
+    unwrap_mty (L l1 Nothing) =
+      addFatalError l1 (text "Illegal tuple section in type")
+    unwrap_mty (L _ (Just t)) = return t
+    tup_sort =
+      case boxity of
+        Unboxed -> HsUnboxedTuple
+        Boxed -> HsBoxedOrConstraintTuple
+
+-- Sum
+mkSumOrTupleType _ _ (Sum _ _ _) = panic "TODO (int-index): mkSumOrTupleType"
+
+mkLHsFunTy :: LHsType GhcPs -> LHsType GhcPs -> LHsType GhcPs
+mkLHsFunTy lhs rhs = L (combineLocs lhs rhs) (HsFunTy noExtField lhs rhs)
 
 mkLHsOpTy :: LHsType GhcPs -> Located RdrName -> LHsType GhcPs -> LHsType GhcPs
 mkLHsOpTy x op y =

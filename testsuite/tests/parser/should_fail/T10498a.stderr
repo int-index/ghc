@@ -1,2 +1,6 @@
 
-T10498a.hs:12:15: error: parse error on input ‘->’
+T10498a.hs:12:9: error:
+    View pattern or function type in expression context: \case -> _
+
+T10498a.hs:13:13: error:
+    View pattern or function type in expression context: 1 -> 2

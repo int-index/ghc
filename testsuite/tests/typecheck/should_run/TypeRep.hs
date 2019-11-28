@@ -54,8 +54,8 @@ main = do
   print $ rep @(Proxy 'EQ)
   print $ rep @(Proxy TYPE)
   print $ rep @(Proxy (TYPE 'LiftedRep))
-  print $ rep @(Proxy *)
-  print $ rep @(Proxy ★)
+  print $ rep @(Proxy (*))
+  print $ rep @(Proxy (★))
   print $ rep @(Proxy 'LiftedRep)
 
   -- Something lifted and primitive

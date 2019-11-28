@@ -94,7 +94,7 @@ import Util             ( looksLikePackageName, fstOf3, sndOf3, thdOf3 )
 import GhcPrelude
 }
 
-%expect 232 -- shift/reduce conflicts
+%expect 233 -- shift/reduce conflicts
 
 {- Last updated: 04 June 2018
 
@@ -1395,13 +1395,15 @@ opt_at_kind_inj_sig :: { Located ([AddAnn], ( LFamilyResultSig GhcPs
 --      T Int [a]                       -- for associated types
 -- Rather a lot of inlining here, else we get reduce/reduce errors
 tycl_hdr :: { Located (Maybe (LHsContext GhcPs), LHsType GhcPs) }
-        : context '=>' type         {% addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
+        : btype '=>' type           {% checkContext $1 >>= \ $1 ->
+                                       addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
                                        >> (return (sLL $1 $> (Just $1, $3)))
                                     }
         | type                      { sL1 $1 (Nothing, $1) }
 
 tycl_hdr_inst :: { Located ([AddAnn],(Maybe (LHsContext GhcPs), Maybe [LHsTyVarBndr GhcPs], LHsType GhcPs)) }
-        : 'forall' tv_bndrs '.' context '=>' type   {% hintExplicitForall $1
+        : 'forall' tv_bndrs '.' btype '=>' type   {% checkContext $4 >>= \ $4 ->
+                                                      hintExplicitForall $1
                                                        >> (addAnnotation (gl $4) (toUnicodeAnn AnnDarrow $5) (gl $5)
                                                            >> return (sLL $1 $> ([mu AnnForall $1, mj AnnDot $3]
                                                                                 , (Just $4, Just $2, $6)))
@@ -1411,7 +1413,8 @@ tycl_hdr_inst :: { Located ([AddAnn],(Maybe (LHsContext GhcPs), Maybe [LHsTyVarB
                                           >> return (sLL $1 $> ([mu AnnForall $1, mj AnnDot $3]
                                                                , (Nothing, Just $2, $4)))
                                        }
-        | context '=>' type         {% addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
+        | btype '=>' type           {% checkContext $1 >>= \ $1 ->
+                                       addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
                                        >> (return (sLL $1 $>([], (Just $1, Nothing, $3))))
                                     }
         | type                      { sL1 $1 ([], (Nothing, Nothing, $1)) }
@@ -1910,7 +1913,8 @@ ctype   :: { LHsType GhcPs }
                                                            , hst_xforall = noExtField
                                                            , hst_body = $4 })
                                                [mu AnnForall $1,fv_ann] }
-        | context '=>' ctype          {% addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
+        | btype '=>' ctype            {% checkContext $1 >>= \ $1 ->
+                                         addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
                                          >> return (sLL $1 $> $
                                             HsQualTy { hst_ctxt = $1
                                                      , hst_xqual = noExtField
@@ -1940,7 +1944,8 @@ ctypedoc :: { LHsType GhcPs }
                                                             , hst_xforall = noExtField
                                                             , hst_body = $4 })
                                                 [mu AnnForall $1,fv_ann] }
-        | context '=>' ctypedoc       {% addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
+        | btype '=>' ctypedoc         {% checkContext $1 >>= \ $1 ->
+                                         addAnnotation (gl $1) (toUnicodeAnn AnnDarrow $2) (gl $2)
                                          >> return (sLL $1 $> $
                                             HsQualTy { hst_ctxt = $1
                                                      , hst_xqual = noExtField
@@ -1948,30 +1953,6 @@ ctypedoc :: { LHsType GhcPs }
         | ipvar '::' type             {% ams (sLL $1 $> (HsIParamTy noExtField $1 $3))
                                              [mu AnnDcolon $2] }
         | typedoc                     { $1 }
-
-----------------------
--- Notes for 'context'
--- We parse a context as a btype so that we don't get reduce/reduce
--- errors in ctype.  The basic problem is that
---      (Eq a, Ord a)
--- looks so much like a tuple type.  We can't tell until we find the =>
-
-context :: { LHsContext GhcPs }
-        :  btype                        {% do { (anns,ctx) <- checkContext $1
-                                                ; if null (unLoc ctx)
-                                                   then addAnnotation (gl $1) AnnUnit (gl $1)
-                                                   else return ()
-                                                ; ams ctx anns
-                                                } }
-
--- See Note [Constr variations of non-terminals]
-constr_context :: { LHsContext GhcPs }
-        :  constr_btype                 {% do { (anns,ctx) <- checkContext $1
-                                                ; if null (unLoc ctx)
-                                                   then addAnnotation (gl $1) AnnUnit (gl $1)
-                                                   else return ()
-                                                ; ams ctx anns
-                                                } }
 
 {- Note [GADT decl discards annotations]
 ~~~~~~~~~~~~~~~~~~~~~
@@ -2055,8 +2036,7 @@ tyapp :: { Located TyEl }
 atype :: { LHsType GhcPs }
         : ntgtycon                       { sL1 $1 (HsTyVar noExtField NotPromoted $1) }      -- Not including unit tuples
         | tyvar                          { sL1 $1 (HsTyVar noExtField NotPromoted $1) }      -- (See Note [Unit tuples])
-        | '*'                            {% do { warnStarIsType (getLoc $1)
-                                               ; return $ sL1 $1 (HsStarTy noExtField (isUnicode $1)) } }
+        | '*'                            {% mkHsStarTy (gl $1) (isUnicode $1) }
 
         -- See Note [Whitespace-sensitive operator parsing] in Lexer.x
         | PREFIX_TILDE atype             {% ams (sLL $1 $> (mkBangTy SrcLazy $2)) [mj AnnTilde $1] }
@@ -2170,7 +2150,7 @@ varids0 :: { Located [Located RdrName] }
 -- Kinds
 
 kind :: { LHsKind GhcPs }
-        : ctype                  { $1 }
+        : exp                 {% runECP_P $1 }
 
 {- Note [Promotion]
    ~~~~~~~~~~~~~~~~
@@ -2315,8 +2295,9 @@ They must be kept identical except for their treatment of 'docprev'.
 -}
 
 constr :: { LConDecl GhcPs }
-        : maybe_docnext forall constr_context '=>' constr_stuff
-                {% ams (let (con,details,doc_prev) = unLoc $5 in
+        : maybe_docnext forall constr_btype '=>' constr_stuff
+               {% checkContext $3 >>= \ $3 ->
+                  ams (let (con,details,doc_prev) = unLoc $5 in
                   addConDoc (L (comb4 $2 $3 $4 $5) (mkConDeclH98 con
                                                        (snd $ unLoc $2)
                                                        (Just $3)
@@ -2571,9 +2552,12 @@ quasiquote :: { Located (HsSplice GhcPs) }
                                 ; quoterId = mkQual varName (qual, quoter) }
                             in sL (getLoc $1) (mkHsQuasiQuote quoterId (mkSrcSpanPs quoteSpan) quote) }
 
-exp   :: { ECP }
-        : infixexp '::' sigtype
-                                { ECP $
+exp :: { ECP }
+    : exp_ns { $1 }
+    | '*'    {% fmap ecpFromType $ mkHsStarTy (gl $1) (isUnicode $1) }
+
+exp_cmd :: { ECP }
+        : infixexp '::' sigtype { ECP $
                                    runECP_PV $1 >>= \ $1 ->
                                    rejectPragmaPV $1 >>
                                    amms (mkHsTySigPV (comb2 $1 $>) $1 $3)
@@ -2604,6 +2588,41 @@ exp   :: { ECP }
                                        [mu AnnRarrowtail $2] }
         | infixexp              { $1 }
         | exp_prag(exp)         { $1 } -- See Note [Pragmas and operator fixity]
+
+exp_ns :: { ECP }
+        : exp_cmd               { $1 }
+
+        | 'forall' tv_bndrs forall_vis_flag ctype
+                                        {% fmap ecpFromType $
+                                           let (fv_ann, fv_flag) = $3 in
+                                           hintExplicitForall $1 *>
+                                           ams (sLL $1 $> $
+                                                HsForAllTy { hst_fvf = fv_flag
+                                                           , hst_bndrs = $2
+                                                           , hst_xforall = noExtField
+                                                           , hst_body = $4 })
+                                               [mu AnnForall $1,fv_ann] }
+       -- View patterns get parenthesized above
+       | infixexp '->' exp
+                       { ECP $
+                            superArrowLHS $
+                            runECP_PV $1 >>= \ $1 ->
+                            addAnnsAt (gl $1) [mu AnnRarrow $2] >> -- See note [GADT decl discards annotations]
+                            runECP_PV $3 >>= \ $3 ->
+                            amms (mkHsArrowPV (comb2 $1 $>) $1 $3) [mu AnnRarrow $2] }
+
+       | '*' '->' exp  {% fmap ecpFromType $
+                          do { lhs <- mkHsStarTy (gl $1) (isUnicode $1)
+                             ; addAnnsAt (gl lhs) [mu AnnRarrow $2] -- See note [GADT decl discards annotations]
+                             ; rhs <- runECP_P $3
+                             ; ams (mkLHsFunTy lhs rhs) [mu AnnRarrow $2] } }
+
+       | infixexp '=>' exp
+                       {% fmap ecpFromType $
+                          do { lhs <- runECP_P $1 >>= checkContext
+                             ; addAnnotation (gl lhs) (toUnicodeAnn AnnDarrow $2) (gl $2)
+                             ; rhs <- runECP_P $3
+                             ; return $ L (comb2 lhs rhs) (HsQualTy noExtField lhs rhs) } }
 
 infixexp :: { ECP }
         : exp10 { $1 }
@@ -2724,10 +2743,10 @@ fexp    :: { ECP }
                                           mkHsAppPV (comb2 $1 $>) $1 $2 }
 
         -- See Note [Whitespace-sensitive operator parsing] in Lexer.x
-        | fexp PREFIX_AT atype       {% runECP_P $1 >>= \ $1 ->
-                                        runPV (checkExpBlockArguments $1) >>= \_ ->
-                                        fmap ecpFromExp $
-                                        ams (sLL $1 $> $ HsAppType noExtField $1 (mkHsWildCardBndrs $3))
+        | fexp PREFIX_AT aexp        { ECP $
+                                        runECP_PV $1 >>= \ $1 ->
+                                        runECP_PV $3 >>= \ $3 ->
+                                        amms (mkHsTypeAppPV (comb2 $1 $>) $1 (gl $2) $3)
                                             [mj AnnAt $2] }
 
         | 'static' aexp              {% runECP_P $2 >>= \ $2 ->
@@ -2823,6 +2842,8 @@ aexp1   :: { ECP }
 aexp2   :: { ECP }
         : qvar                          { ECP $ mkHsVarPV $! $1 }
         | qcon                          { ECP $ mkHsVarPV $! $1 }
+        | '(' '->' ')'                  { ECP $ amms (mkHsVarPV (sLL $1 $> (getRdrName funTyCon)))
+                                                     [mop $1,mu AnnRarrow $2,mcp $3] }
         | ipvar                         { ecpFromExp $ sL1 $1 (HsIPVar noExtField $! unLoc $1) }
         | overloaded_label              { ecpFromExp $ sL1 $1 (HsOverLabel noExtField Nothing $! unLoc $1) }
         | literal                       { ECP $ mkHsLitPV $! $1 }
@@ -2837,7 +2858,7 @@ aexp2   :: { ECP }
         -- This allows you to write, e.g., '(+ 3, 4 -)', which isn't
         -- correct Haskell (you'd have to write '((+ 3), (4 -))')
         -- but the less cluttered version fell out of having texps.
-        | '(' texp ')'                  { ECP $
+        | '(' texp_ns ')'               { ECP $
                                            runECP_PV $2 >>= \ $2 ->
                                            amms (mkHsParPV (comb2 $1 $>) $2) [mop $1,mcp $3] }
         | '(' tup_exprs ')'             { ECP $
@@ -2861,8 +2882,17 @@ aexp2   :: { ECP }
         | splice_untyped { ECP $ mkHsSplicePV $1 }
         | splice_typed   { ecpFromExp $ mapLoc (HsSpliceE noExtField) $1 }
 
-        | SIMPLEQUOTE  qvar     {% fmap ecpFromExp $ ams (sLL $1 $> $ HsBracket noExtField (VarBr noExtField True  (unLoc $2))) [mj AnnSimpleQuote $1,mj AnnName $2] }
-        | SIMPLEQUOTE  qcon     {% fmap ecpFromExp $ ams (sLL $1 $> $ HsBracket noExtField (VarBr noExtField True  (unLoc $2))) [mj AnnSimpleQuote $1,mj AnnName $2] }
+        | SIMPLEQUOTE  qvar     { ECP $ amms (mkPrimeNamePV (comb2 $1 $>) $2) [mj AnnSimpleQuote $1,mj AnnName $2] }
+        | SIMPLEQUOTE  qcon     { ECP $ amms (mkPrimeNamePV (comb2 $1 $>) $2) [mj AnnSimpleQuote $1,mj AnnName $2] }
+        | SIMPLEQUOTE  '(' ktype ',' comma_types1 ')'
+                             {% fmap ecpFromType $
+                                addAnnotation (gl $3) AnnComma (gl $4) >>
+                                ams (sLL $1 $> $ HsExplicitTupleTy noExtField ($3 : $5))
+                                    [mj AnnSimpleQuote $1,mop $2,mcp $6] }
+        | SIMPLEQUOTE  '[' comma_types0 ']'
+                             {% fmap ecpFromType $
+                                ams (sLL $1 $> $ HsExplicitListTy noExtField IsPromoted $3)
+                                                       [mj AnnSimpleQuote $1,mos $2,mcs $4] }
         | TH_TY_QUOTE tyvar     {% fmap ecpFromExp $ ams (sLL $1 $> $ HsBracket noExtField (VarBr noExtField False (unLoc $2))) [mj AnnThTyQuote $1,mj AnnName $2] }
         | TH_TY_QUOTE gtycon    {% fmap ecpFromExp $ ams (sLL $1 $> $ HsBracket noExtField (VarBr noExtField False (unLoc $2))) [mj AnnThTyQuote $1,mj AnnName $2] }
         | TH_TY_QUOTE {- nothing -} {% reportEmptyDoubleQuotes (getLoc $1) }
@@ -2934,7 +2964,11 @@ cvtopdecls0 :: { [LHsDecl GhcPs] }
 -- things that can appear unparenthesized as long as they're
 -- inside parens or delimitted by commas
 texp :: { ECP }
-        : exp                           { $1 }
+     : texp_ns { $1 }
+     | '*'     {% fmap ecpFromType $ mkHsStarTy (gl $1) (isUnicode $1) }
+
+texp_ns :: { ECP }
+        : exp_ns                        { $1 }
 
         -- Note [Parsing sections]
         -- ~~~~~~~~~~~~~~~~~~~~~~~
@@ -2958,12 +2992,6 @@ texp :: { ECP }
                                 runECP_PV $2 >>= \ $2 ->
                                 $1 >>= \ $1 ->
                                 mkHsSectionR_PV (comb2 $1 $>) $1 $2 }
-
-       -- View patterns get parenthesized above
-        | exp '->' texp   { ECP $
-                             runECP_PV $1 >>= \ $1 ->
-                             runECP_PV $3 >>= \ $3 ->
-                             amms (mkHsViewPatPV (comb2 $1 $>) $1 $3) [mu AnnRarrow $2] }
 
 -- Always at least one comma or bar.
 -- Though this can parse just commas (without any expressions), it won't
@@ -3225,10 +3253,10 @@ gdpat   :: { forall b. DisambECP b => PV (LGRHS GhcPs (Located b)) }
 -- Bangs inside are parsed as infix operator applications, so that
 -- we parse them right when bang-patterns are off
 pat     :: { LPat GhcPs }
-pat     :  exp          {% (checkPattern <=< runECP_P) $1 }
+pat     :  exp_cmd {% (checkPattern <=< runECP_P) $1 }
 
 bindpat :: { LPat GhcPs }
-bindpat :  exp            {% -- See Note [Parser-Validator ReaderT SDoc] in RdrHsSyn
+bindpat :  exp_cmd        {% -- See Note [Parser-Validator ReaderT SDoc] in RdrHsSyn
                              checkPattern_msg (text "Possibly caused by a missing 'do'?")
                                               (runECP_PV $1) }
 
@@ -3296,10 +3324,10 @@ stmt  :: { forall b. DisambECP b => PV (LStmt GhcPs (Located b)) }
                                                (mj AnnRec $1:(fst $ unLoc $2)) }
 
 qual  :: { forall b. DisambECP b => PV (LStmt GhcPs (Located b)) }
-    : bindpat '<-' exp                   { runECP_PV $3 >>= \ $3 ->
+    : bindpat '<-' exp_cmd               { runECP_PV $3 >>= \ $3 ->
                                            ams (sLL $1 $> $ mkBindStmt $1 $3)
                                                [mu AnnLarrow $2] }
-    | exp                                { runECP_PV $1 >>= \ $1 ->
+    | exp_cmd                            { runECP_PV $1 >>= \ $1 ->
                                            return $ sL1 $1 $ mkBodyStmt $1 }
     | 'let' binds                        { ams (sLL $1 $> $ LetStmt noExtField (snd $ unLoc $2))
                                                (mj AnnLet $1:(fst $ unLoc $2)) }
@@ -3586,7 +3614,9 @@ qvarop :: { Located RdrName }
                                        ,mj AnnBackquote $3] }
 
 qvaropm :: { Located RdrName }
-        : qvarsym_no_minus      { $1 }
+        : varsym_no_minus_star  { $1 }
+        | '*'                   { sL1 $1 $ mkUnqual varName (fsLit (starSym (isUnicode $1))) }
+        | qvarsym1              { $1 }
         | '`' qvarid '`'        {% ams (sLL $1 $> (unLoc $2))
                                        [mj AnnBackquote $1,mj AnnVal $2
                                        ,mj AnnBackquote $3] }
@@ -3643,7 +3673,6 @@ varid :: { Located RdrName }
         | 'unsafe'         { sL1 $1 $! mkUnqual varName (fsLit "unsafe") }
         | 'safe'           { sL1 $1 $! mkUnqual varName (fsLit "safe") }
         | 'interruptible'  { sL1 $1 $! mkUnqual varName (fsLit "interruptible")}
-        | 'forall'         { sL1 $1 $! mkUnqual varName (fsLit "forall") }
         | 'family'         { sL1 $1 $! mkUnqual varName (fsLit "family") }
         | 'role'           { sL1 $1 $! mkUnqual varName (fsLit "role") }
         -- If this changes relative to tyvarid, update 'checkRuleTyVarBndrNames' in RdrHsSyn.hs
@@ -3653,21 +3682,18 @@ qvarsym :: { Located RdrName }
         : varsym                { $1 }
         | qvarsym1              { $1 }
 
-qvarsym_no_minus :: { Located RdrName }
-        : varsym_no_minus       { $1 }
-        | qvarsym1              { $1 }
-
 qvarsym1 :: { Located RdrName }
 qvarsym1 : QVARSYM              { sL1 $1 $ mkQual varName (getQVARSYM $1) }
 
 varsym :: { Located RdrName }
-        : varsym_no_minus       { $1 }
-        | '-'                   { sL1 $1 $ mkUnqual varName (fsLit "-") }
-
-varsym_no_minus :: { Located RdrName } -- varsym not including '-'
         : VARSYM               { sL1 $1 $ mkUnqual varName (getVARSYM $1) }
-        | special_sym          { sL1 $1 $ mkUnqual varName (unLoc $1) }
+        | '.'                  { sL1 $1 $ mkUnqual varName (fsLit ".") }
+        | '-'                  { sL1 $1 $ mkUnqual varName (fsLit "-") }
+        | '*'                  { sL1 $1 $ mkUnqual varName (fsLit (starSym (isUnicode $1))) }
 
+varsym_no_minus_star :: { Located RdrName } -- varsym not including '-' or '*'
+        : VARSYM               { sL1 $1 $ mkUnqual varName (getVARSYM $1) }
+        | '.'                  { sL1 $1 $ mkUnqual varName (fsLit ".") }
 
 -- These special_ids are treated as keywords in various places,
 -- but as ordinary ids elsewhere.   'special_id' collects all these
@@ -3693,10 +3719,6 @@ special_id
         | 'unit'                { sL1 $1 (fsLit "unit") }
         | 'dependency'          { sL1 $1 (fsLit "dependency") }
         | 'signature'           { sL1 $1 (fsLit "signature") }
-
-special_sym :: { Located FastString }
-special_sym : '.'       { sL1 $1 (fsLit ".") }
-            | '*'       { sL1 $1 (fsLit (starSym (isUnicode $1))) }
 
 -----------------------------------------------------------------------------
 -- Data constructors
