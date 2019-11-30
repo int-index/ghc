@@ -2023,7 +2023,8 @@ tyapp :: { Located TyEl }
         : atype                         { sL1 $1 $ TyElOpd (unLoc $1) }
 
         -- See Note [Whitespace-sensitive operator parsing] in Lexer.x
-        | PREFIX_AT atype               { sLL $1 $> $ (TyElKindApp (comb2 $1 $2) $2) }
+        | PREFIX_AT aexp2               {% runECP_P $2 >>= \ $2 ->
+                                           return $ sLL $1 $> $ (TyElKindApp (comb2 $1 $2) $2) }
 
         | qtyconop                      { sL1 $1 $ TyElOpr (unLoc $1) }
         | tyvarop                       { sL1 $1 $ TyElOpr (unLoc $1) }
@@ -2039,8 +2040,10 @@ atype :: { LHsType GhcPs }
         | '*'                            {% mkHsStarTy (gl $1) (isUnicode $1) }
 
         -- See Note [Whitespace-sensitive operator parsing] in Lexer.x
-        | PREFIX_TILDE atype             {% ams (sLL $1 $> (mkBangTy SrcLazy $2)) [mj AnnTilde $1] }
-        | PREFIX_BANG  atype             {% ams (sLL $1 $> (mkBangTy SrcStrict $2)) [mj AnnBang $1] }
+        | PREFIX_TILDE aexp2             {% runECP_P $2 >>= \ $2 ->
+                                            ams (sLL $1 $> (mkBangTy SrcLazy $2)) [mj AnnTilde $1] }
+        | PREFIX_BANG  aexp2             {% runECP_P $2 >>= \ $2 ->
+                                            ams (sLL $1 $> (mkBangTy SrcStrict $2)) [mj AnnBang $1] }
 
         | '{' fielddecls '}'             {% amms (checkRecordSyntax
                                                     (sLL $1 $> $ HsRecTy noExtField $2))
@@ -2061,13 +2064,13 @@ atype :: { LHsType GhcPs }
                                              [mo $1,mc $3] }
         | '(#' bar_types2 '#)'        {% ams (sLL $1 $> $ HsSumTy noExtField $2)
                                              [mo $1,mc $3] }
-        | '[' ktype ']'               {% ams (sLL $1 $> $ HsListTy  noExtField $2) [mos $1,mcs $3] }
+        | '[' ktypE ']'               {% ams (sLL $1 $> $ HsListTy  noExtField $2) [mos $1,mcs $3] }
         | '(' ktype ')'               {% ams (sLL $1 $> $ HsParTy   noExtField $2) [mop $1,mcp $3] }
         | quasiquote                  { mapLoc (HsSpliceTy noExtField) $1 }
         | splice_untyped              { mapLoc (HsSpliceTy noExtField) $1 }
                                       -- see Note [Promotion] for the followings
         | SIMPLEQUOTE qcon_nowiredlist {% ams (sLL $1 $> $ HsTyVar noExtField IsPromoted $2) [mj AnnSimpleQuote $1,mj AnnName $2] }
-        | SIMPLEQUOTE  '(' ktype ',' comma_types1 ')'
+        | SIMPLEQUOTE  '(' ktypE ',' comma_types1 ')'
                              {% addAnnotation (gl $3) AnnComma (gl $4) >>
                                 ams (sLL $1 $> $ HsExplicitTupleTy noExtField ($3 : $5))
                                     [mj AnnSimpleQuote $1,mop $2,mcp $6] }
@@ -2080,7 +2083,7 @@ atype :: { LHsType GhcPs }
         -- if you had written '[ty, ty, ty]
         -- (One means a list type, zero means the list type constructor,
         -- so you have to quote those.)
-        | '[' ktype ',' comma_types1 ']'  {% addAnnotation (gl $2) AnnComma
+        | '[' ktypE ',' comma_types1 ']'  {% addAnnotation (gl $2) AnnComma
                                                            (gl $3) >>
                                              ams (sLL $1 $> $ HsExplicitListTy noExtField NotPromoted ($2 : $4))
                                                  [mos $1,mcs $5] }
@@ -2106,15 +2109,18 @@ comma_types0  :: { [LHsType GhcPs] }  -- Zero or more:  ty,ty,ty
         : comma_types1                  { $1 }
         | {- empty -}                   { [] }
 
+ktypE :: { LHsType GhcPs }
+      : exp {% runECP_P $1 }
+
 comma_types1    :: { [LHsType GhcPs] }  -- One or more:  ty,ty,ty
-        : ktype                        { [$1] }
-        | ktype  ',' comma_types1      {% addAnnotation (gl $1) AnnComma (gl $2)
+        : ktypE                        { [$1] }
+        | ktypE  ',' comma_types1      {% addAnnotation (gl $1) AnnComma (gl $2)
                                           >> return ($1 : $3) }
 
 bar_types2    :: { [LHsType GhcPs] }  -- Two or more:  ty|ty|ty
-        : ktype  '|' ktype             {% addAnnotation (gl $1) AnnVbar (gl $2)
+        : ktypE  '|' ktypE             {% addAnnotation (gl $1) AnnVbar (gl $2)
                                           >> return [$1,$3] }
-        | ktype  '|' bar_types2        {% addAnnotation (gl $1) AnnVbar (gl $2)
+        | ktypE  '|' bar_types2        {% addAnnotation (gl $1) AnnVbar (gl $2)
                                           >> return ($1 : $3) }
 
 tv_bndrs :: { [LHsTyVarBndr GhcPs] }
@@ -2333,8 +2339,9 @@ fielddecls1 :: { [LConDeclField GhcPs] }
 
 fielddecl :: { LConDeclField GhcPs }
                                               -- A list because of   f,g :: Int
-        : maybe_docnext sig_vars '::' ctype maybe_docprev
-            {% ams (L (comb2 $2 $4)
+        : maybe_docnext sig_vars '::' exp maybe_docprev
+            {% runECP_P $4 >>= \ $4 ->
+               ams (L (comb2 $2 $4)
                       (ConDeclField noExtField (reverse (map (\ln@(L l n) -> L l $ FieldOcc noExtField ln) (unLoc $2))) $4 ($1 `mplus` $5)))
                    [mu AnnDcolon $3] }
 
@@ -2557,7 +2564,7 @@ exp :: { ECP }
     | '*'    {% fmap ecpFromType $ mkHsStarTy (gl $1) (isUnicode $1) }
 
 exp_cmd :: { ECP }
-        : infixexp '::' sigtype { ECP $
+        : exp_cmd '::' sigtype  { ECP $
                                    runECP_PV $1 >>= \ $1 ->
                                    rejectPragmaPV $1 >>
                                    amms (mkHsTySigPV (comb2 $1 $>) $1 $3)
@@ -2592,8 +2599,9 @@ exp_cmd :: { ECP }
 exp_ns :: { ECP }
         : exp_cmd               { $1 }
 
-        | 'forall' tv_bndrs forall_vis_flag ctype
-                                        {% fmap ecpFromType $
+        | 'forall' tv_bndrs forall_vis_flag exp
+                                        {% runECP_P $4 >>= \ $4 ->
+                                           fmap ecpFromType $
                                            let (fv_ann, fv_flag) = $3 in
                                            hintExplicitForall $1 *>
                                            ams (sLL $1 $> $
@@ -2884,7 +2892,7 @@ aexp2   :: { ECP }
 
         | SIMPLEQUOTE  qvar     { ECP $ amms (mkPrimeNamePV (comb2 $1 $>) $2) [mj AnnSimpleQuote $1,mj AnnName $2] }
         | SIMPLEQUOTE  qcon     { ECP $ amms (mkPrimeNamePV (comb2 $1 $>) $2) [mj AnnSimpleQuote $1,mj AnnName $2] }
-        | SIMPLEQUOTE  '(' ktype ',' comma_types1 ')'
+        | SIMPLEQUOTE  '(' ktypE ',' comma_types1 ')'
                              {% fmap ecpFromType $
                                 addAnnotation (gl $3) AnnComma (gl $4) >>
                                 ams (sLL $1 $> $ HsExplicitTupleTy noExtField ($3 : $5))
@@ -2905,7 +2913,8 @@ aexp2   :: { ECP }
                                  fmap ecpFromExp $
                                  ams (sLL $1 $> $ HsBracket noExtField (TExpBr noExtField $2))
                                       (if (hasE $1) then [mj AnnOpenE $1,mc $3] else [mo $1,mc $3]) }
-        | '[t|' ktype '|]'    {% fmap ecpFromExp $
+        | '[t|' exp '|]'      {% runECP_P $2 >>= \ $2 ->
+                                 fmap ecpFromExp $
                                  ams (sLL $1 $> $ HsBracket noExtField (TypBr noExtField $2)) [mo $1,mu AnnCloseQ $3] }
         | '[p|' infixexp '|]' {% (checkPattern <=< runECP_P) $2 >>= \p ->
                                       fmap ecpFromExp $
