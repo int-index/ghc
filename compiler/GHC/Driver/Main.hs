@@ -66,7 +66,7 @@ module GHC.Driver.Main
     , hscTcRnLookupRdrName
     , hscStmt, hscParseStmtWithLocation, hscStmtWithLocation, hscParsedStmt
     , hscDecls, hscParseDeclsWithLocation, hscDeclsWithLocation, hscParsedDecls
-    , hscTcExpr, TcRnExprMode(..), hscImport, hscKcType
+    , hscTcExpr, hscTcExpr2, TcRnExprMode(..), hscImport, hscKcType
     , hscParseExpr
     , hscParseType
     , hscCompileCoreExpr
@@ -1816,7 +1816,15 @@ hscTcExpr :: HscEnv
           -> TcRnExprMode
           -> String -- ^ The expression
           -> IO Type
-hscTcExpr hsc_env0 mode expr = runInteractiveHsc hsc_env0 $ do
+hscTcExpr hsc_env0 mode expr =
+  fst <$> hscTcExpr2 hsc_env0 mode expr
+
+-- | Typecheck an expression (but don't run it)
+hscTcExpr2 :: HscEnv
+          -> TcRnExprMode
+          -> String -- ^ The expression
+          -> IO (Type, SDoc)
+hscTcExpr2 hsc_env0 mode expr = runInteractiveHsc hsc_env0 $ do
   hsc_env <- getHscEnv
   parsed_expr <- hscParseExpr expr
   ioMsgMaybe $ tcRnExpr hsc_env mode parsed_expr

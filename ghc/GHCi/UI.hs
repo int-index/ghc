@@ -44,6 +44,7 @@ import ErrUtils hiding (traceCmd)
 import GHC.Driver.Finder as Finder
 import GHC.Driver.Monad ( modifySession )
 import qualified GHC
+import qualified GHC.Runtime.Eval as GHC (exprType2)
 import GHC ( LoadHowMuch(..), Target(..),  TargetId(..), InteractiveImport(..),
              TyThing(..), Phase, BreakIndex, Resume, SingleStep, Ghc,
              GetDocsFailure(..),
@@ -2109,8 +2110,9 @@ typeOfExpr str = handleSourceError GHC.printException $ do
           ("+d", rest) -> (GHC.TM_Default, dropWhile isSpace rest)
           ("+v", rest) -> (GHC.TM_NoInst,  dropWhile isSpace rest)
           _            -> (GHC.TM_Inst,    str)
-    ty <- GHC.exprType mode expr_str
+    (ty, doc) <- GHC.exprType2 mode expr_str
     printForUser $ sep [text expr_str, nest 2 (dcolon <+> pprTypeForUser ty)]
+    printForUser doc
 
 -----------------------------------------------------------------------------
 -- | @:type-at@ command

@@ -145,6 +145,10 @@ import Control.Monad
 
 import TcHoleFitTypes ( HoleFitPluginR (..) )
 
+import qualified CoreUtils
+import GHC.HsToCore.Expr (dsLExpr)
+import GHC.HsToCore.Monad (initDsTc)
+
 
 #include "HsVersions.h"
 
@@ -2368,7 +2372,7 @@ data TcRnExprMode = TM_Inst    -- ^ Instantiate the type fully (:type)
 tcRnExpr :: HscEnv
          -> TcRnExprMode
          -> LHsExpr GhcPs
-         -> IO (Messages, Maybe Type)
+         -> IO (Messages, Maybe (Type, SDoc))
 tcRnExpr hsc_env mode rdr_expr
   = runTcInteractive hsc_env $
     do {
@@ -2381,13 +2385,13 @@ tcRnExpr hsc_env mode rdr_expr
     uniq <- newUnique ;
     let { fresh_it  = itName uniq (getLoc rdr_expr)
         ; orig = lexprCtOrigin rn_expr } ;
-    ((tclvl, res_ty), lie)
+    ((tclvl, (tc_expr, res_ty)), lie)
           <- captureTopConstraints $
              pushTcLevelM          $
-             do { (_tc_expr, expr_ty) <- tcInferSigma rn_expr
+             do { (tc_expr, expr_ty) <- tcInferSigma rn_expr
                 ; if inst
-                  then snd <$> deeplyInstantiate orig expr_ty
-                  else return expr_ty } ;
+                  then (,) tc_expr . snd <$> deeplyInstantiate orig expr_ty
+                  else return (tc_expr, expr_ty) } ;
 
     -- Generalise
     (qtvs, dicts, _, residual, _)
@@ -2410,7 +2414,8 @@ tcRnExpr hsc_env mode rdr_expr
     fam_envs <- tcGetFamInstEnvs ;
     -- normaliseType returns a coercion which we discard, so the Role is
     -- irrelevant
-    return (snd (normaliseType fam_envs Nominal ty))
+    doc <- subexprTypes tc_expr ;
+    return (snd (normaliseType fam_envs Nominal ty), doc)
     }
   where
     -- See Note [TcRnExprMode]
@@ -2418,6 +2423,26 @@ tcRnExpr hsc_env mode rdr_expr
       TM_Inst    -> (True,  NoRestrictions, id)
       TM_NoInst  -> (False, NoRestrictions, id)
       TM_Default -> (True,  EagerDefaulting, unsetWOptM Opt_WarnTypeDefaults)
+
+
+subexprTypes :: LHsExpr GhcTc -> TcRn SDoc
+subexprTypes = go
+  where
+    e1 $$$ e2 = L noSrcSpan (HsApp noExtField e1 e2)
+    go (L _ (OpApp _ e0 e1 e2)) =
+      go ((e1 $$$ e0) $$$ e2)
+    go e@(L _ (HsApp _ e1 e2)) = do
+      t <- get_type e
+      d1 <- go e1
+      d2 <- go e2
+      return (parens (d1 <+> d2 <+> text "::" <+> ppr t))
+    go (L _ (HsPar _ e)) = go e
+    go e = do
+      t <- get_type e
+      return (parens (ppr e <+> text "::" <+> ppr t))
+    get_type e = do
+      ds_e <- initDsTc $ dsLExpr e
+      zonkTcType (CoreUtils.exprType ds_e)
 
 --------------------------
 tcRnImportDecls :: HscEnv

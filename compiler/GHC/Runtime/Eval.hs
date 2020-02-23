@@ -30,6 +30,7 @@ module GHC.Runtime.Eval (
         moduleIsInterpreted,
         getInfo,
         exprType,
+        exprType2,
         typeKind,
         parseName,
         parseInstanceHead,
@@ -996,6 +997,11 @@ exprType :: GhcMonad m => TcRnExprMode -> String -> m Type
 exprType mode expr = withSession $ \hsc_env -> do
    ty <- liftIO $ hscTcExpr hsc_env mode expr
    return $ tidyType emptyTidyEnv ty
+
+exprType2 :: GhcMonad m => TcRnExprMode -> String -> m (Type, SDoc)
+exprType2 mode expr = withSession $ \hsc_env -> do
+   (ty, doc) <- liftIO $ hscTcExpr2 hsc_env mode expr
+   return (tidyType emptyTidyEnv ty, doc)
 
 -- -----------------------------------------------------------------------------
 -- Getting the kind of a type
